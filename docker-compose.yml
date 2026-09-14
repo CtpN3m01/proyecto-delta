@@ -1,0 +1,54 @@
+services:
+  coordinator-api:
+    build:
+      context: .
+    command: uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
+    environment:
+      PARTY_URLS: ${PARTY_URLS:-http://localhost:8100,http://localhost:8101,http://localhost:8102}
+    ports:
+      - "8000:8000"
+
+  mock-party-0:
+    build:
+      context: .
+    command: uvicorn party_receiver.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - coordinator-api
+    environment:
+      PARTY_ID: "0"
+      PARTY_STORAGE_DIR: /data
+      COORDINATOR_INTERNAL_URL: http://coordinator-api:8000
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./data/parties/party-0:/data
+
+  mock-party-1:
+    build:
+      context: .
+    command: uvicorn party_receiver.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - coordinator-api
+    environment:
+      PARTY_ID: "1"
+      PARTY_STORAGE_DIR: /data
+      COORDINATOR_INTERNAL_URL: http://coordinator-api:8000
+    ports:
+      - "8101:8000"
+    volumes:
+      - ./data/parties/party-1:/data
+
+  mock-party-2:
+    build:
+      context: .
+    command: uvicorn party_receiver.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - coordinator-api
+    environment:
+      PARTY_ID: "2"
+      PARTY_STORAGE_DIR: /data
+      COORDINATOR_INTERNAL_URL: http://coordinator-api:8000
+    ports:
+      - "8102:8000"
+    volumes:
+      - ./data/parties/party-2:/data
