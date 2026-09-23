@@ -7,8 +7,8 @@ from coordinator.api.videos import router as videos_router
 
 app = FastAPI(
     title="Proyecto Delta Coordinator",
-    description="Registers video metadata and coordinates T09 share receipt states.",
-    version="0.1.0",
+    description="Plano de control del MVP MPC; nunca recibe pixels ni el MP4.",
+    version="0.2.0",
 )
 app.include_router(videos_router)
 

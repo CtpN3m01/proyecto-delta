@@ -1,23 +1,15 @@
-"""Decodificación local de MP4 y serialización binaria por frames."""
+"""Preprocesamiento local de video a pixels uint8 para el MPC."""
 
-from dataclasses import dataclass
-from io import BytesIO
-import json
+from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
-import struct
 
 import cv2
 import numpy as np
 
 
-_PAYLOAD_MAGIC = b"DELTA-T09-JPEG\x00"
-_METADATA_CAPACITY = 512
-_LENGTH = struct.Struct(">I")
-_JPEG_PARAMETERS = (cv2.IMWRITE_JPEG_QUALITY, 90)
-
-
 class VideoPreprocessingError(RuntimeError):
-    """El MP4 no pudo convertirse a la representación binaria de T09."""
+    """El MP4 no cumple el perfil o no pudo decodificarse."""
 
 
 @dataclass(frozen=True)
@@ -28,21 +20,41 @@ class VideoMetadata:
     channels: int
     fps: float
     dtype: str
+    version: int = 2
+
+    def as_dict(self) -> dict[str, int | float | str]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
 class PreprocessedVideo:
+    """Pixels grayscale contiguos en orden frame/fila/columna."""
+
     payload: bytes
     metadata: VideoMetadata
 
 
 class VideoPreprocessor:
-    """Lee el MP4 local y produce un payload binario; no realiza operaciones de red.
+    """Reduce resolución/FPS y convierte a grayscale exclusivamente en cliente."""
 
-    Cada frame decodificado se codifica inmediatamente como JPEG. El contenedor
-    resultante incluye magic, metadata JSON y bloques de longitud prefijada. De
-    este modo nunca se mantienen simultáneamente todos los frames crudos en RAM.
-    """
+    def __init__(
+        self,
+        *,
+        max_duration_seconds: float = 20.0,
+        max_width: int = 320,
+        max_height: int = 240,
+        target_fps: float = 5.0,
+    ) -> None:
+        if max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds debe ser positivo")
+        if max_width <= 0 or max_height <= 0:
+            raise ValueError("Las dimensiones máximas deben ser positivas")
+        if target_fps <= 0:
+            raise ValueError("target_fps debe ser positivo")
+        self._max_duration = float(max_duration_seconds)
+        self._max_width = int(max_width)
+        self._max_height = int(max_height)
+        self._target_fps = float(target_fps)
 
     def process(self, video_path: str | Path) -> PreprocessedVideo:
         path = Path(video_path)
@@ -51,106 +63,92 @@ class VideoPreprocessor:
             capture.release()
             raise VideoPreprocessingError(f"OpenCV no pudo abrir el MP4: {path}")
 
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        if not np.isfinite(fps) or fps < 0:
-            fps = 0.0
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS))
+        reported_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not math.isfinite(source_fps) or source_fps <= 0:
+            capture.release()
+            raise VideoPreprocessingError("El MP4 no declara un FPS válido")
+        if reported_frames > 0 and reported_frames / source_fps > self._max_duration + 1e-6:
+            capture.release()
+            raise VideoPreprocessingError(
+                f"El video excede la duración máxima de {self._max_duration:g} segundos"
+            )
 
-        buffer = BytesIO()
-        buffer.write(_PAYLOAD_MAGIC)
-        buffer.write(_LENGTH.pack(0))
-        buffer.write(bytes(_METADATA_CAPACITY))
+        output_fps = min(source_fps, self._target_fps)
+        next_sample_time = 0.0
+        decoded_index = 0
+        target_size: tuple[int, int] | None = None
+        frame_bytes: list[bytes] = []
 
-        frame_count = 0
-        expected_shape: tuple[int, ...] | None = None
-        expected_dtype: np.dtype[np.generic] | None = None
         try:
             while True:
                 success, frame = capture.read()
                 if not success:
                     break
-                if expected_shape is None:
-                    expected_shape = frame.shape
-                    expected_dtype = frame.dtype
-                elif frame.shape != expected_shape or frame.dtype != expected_dtype:
+                timestamp = decoded_index / source_fps
+                decoded_index += 1
+                if timestamp >= self._max_duration:
                     raise VideoPreprocessingError(
-                        "El video contiene frames con dimensiones o dtype inconsistentes."
+                        f"El video excede la duración máxima de {self._max_duration:g} segundos"
                     )
+                if timestamp + 1e-9 < next_sample_time:
+                    continue
 
-                encoded_ok, encoded_frame = cv2.imencode(
-                    ".jpg",
-                    frame,
-                    _JPEG_PARAMETERS,
-                )
-                if not encoded_ok:
-                    raise VideoPreprocessingError(
-                        "OpenCV no pudo codificar uno de los frames del MP4."
-                    )
-                encoded_bytes = encoded_frame.tobytes()
-                buffer.write(_LENGTH.pack(len(encoded_bytes)))
-                buffer.write(encoded_bytes)
-                frame_count += 1
+                gray = self._to_grayscale(frame)
+                if target_size is None:
+                    target_size = self._scaled_size(gray.shape[1], gray.shape[0])
+                if (gray.shape[1], gray.shape[0]) != target_size:
+                    gray = cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
+                gray = np.ascontiguousarray(gray, dtype=np.uint8)
+                frame_bytes.append(gray.tobytes())
+                next_sample_time += 1.0 / output_fps
         except VideoPreprocessingError:
-            buffer.close()
             raise
-        except (cv2.error, OverflowError, struct.error) as exc:
-            buffer.close()
+        except (cv2.error, MemoryError, OverflowError, ValueError) as exc:
             raise VideoPreprocessingError(
-                "No se pudo codificar la representación binaria del video."
+                "No se pudo convertir el video a pixels grayscale"
             ) from exc
         finally:
             capture.release()
 
-        if frame_count == 0:
-            buffer.close()
-            raise VideoPreprocessingError("El MP4 no contiene frames decodificables.")
+        if not frame_bytes or target_size is None:
+            raise VideoPreprocessingError("El MP4 no contiene frames decodificables")
 
-        assert expected_shape is not None
-        assert expected_dtype is not None
-        height, width = expected_shape[:2]
-        channels = expected_shape[2] if len(expected_shape) == 3 else 1
+        width, height = target_size
+        max_frames = math.ceil(self._max_duration * output_fps)
+        if len(frame_bytes) > max_frames:
+            raise VideoPreprocessingError("El muestreo produjo más frames de los permitidos")
         metadata = VideoMetadata(
-            frame_count=frame_count,
-            height=int(height),
-            width=int(width),
-            channels=int(channels),
-            fps=fps,
-            dtype=str(expected_dtype),
+            frame_count=len(frame_bytes),
+            height=height,
+            width=width,
+            channels=1,
+            fps=output_fps,
+            dtype="uint8",
+            version=2,
         )
-
-        try:
-            metadata_bytes = json.dumps(
-                {
-                    "version": 1,
-                    "frame_encoding": "jpeg",
-                    "frame_count": metadata.frame_count,
-                    "height": metadata.height,
-                    "width": metadata.width,
-                    "channels": metadata.channels,
-                    "fps": metadata.fps,
-                    "dtype": metadata.dtype,
-                },
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-            if len(metadata_bytes) > _METADATA_CAPACITY:
-                raise VideoPreprocessingError(
-                    "La metadata del video excede la capacidad del contenedor."
-                )
-
-            end_position = buffer.tell()
-            buffer.seek(len(_PAYLOAD_MAGIC))
-            buffer.write(_LENGTH.pack(len(metadata_bytes)))
-            buffer.write(metadata_bytes)
-            buffer.seek(end_position)
-            payload = buffer.getvalue()
-        except VideoPreprocessingError:
-            raise
-        except (OverflowError, struct.error, TypeError, ValueError) as exc:
-            raise VideoPreprocessingError(
-                "No se pudo serializar la representación binaria del video."
-            ) from exc
-        finally:
-            buffer.close()
-
+        payload = b"".join(frame_bytes)
+        expected_size = metadata.frame_count * metadata.height * metadata.width
+        if len(payload) != expected_size:
+            raise VideoPreprocessingError("El payload numérico tiene un tamaño inconsistente")
         return PreprocessedVideo(payload=payload, metadata=metadata)
+
+    @staticmethod
+    def _to_grayscale(frame: np.ndarray) -> np.ndarray:
+        if frame.ndim == 2:
+            return frame
+        if frame.ndim != 3:
+            raise VideoPreprocessingError("OpenCV devolvió un frame con forma inválida")
+        if frame.shape[2] == 1:
+            return frame[:, :, 0]
+        if frame.shape[2] == 3:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+        raise VideoPreprocessingError("El MP4 usa un número de canales no soportado")
+
+    def _scaled_size(self, width: int, height: int) -> tuple[int, int]:
+        scale = min(1.0, self._max_width / width, self._max_height / height)
+        target_width = max(1, int(round(width * scale)))
+        target_height = max(1, int(round(height * scale)))
+        return target_width, target_height

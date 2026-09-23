@@ -6,11 +6,17 @@ from client.preprocessing.video_preprocessor import (
     VideoPreprocessingError,
     VideoPreprocessor,
 )
+from client.preprocessing.video_reconstructor import (
+    VideoReconstructionError,
+    VideoReconstructor,
+)
 
 __all__ = [
     "PreprocessedVideo",
     "VideoMetadata",
     "VideoPreprocessingError",
     "VideoPreprocessor",
+    "VideoReconstructionError",
+    "VideoReconstructor",
 ]
 

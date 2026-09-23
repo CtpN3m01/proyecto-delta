@@ -1,119 +1,110 @@
-"""Pruebas del preprocesamiento local y su contenedor binario de frames JPEG."""
+"""Pruebas de la representación numérica local del Sprint 1."""
 
-import json
 from pathlib import Path
-import struct
 
 import cv2
 import numpy as np
 import pytest
 
-from client.preprocessing import VideoPreprocessingError, VideoPreprocessor
+from client.preprocessing import (
+    VideoPreprocessingError,
+    VideoPreprocessor,
+    VideoReconstructor,
+)
 
 
-_PAYLOAD_MAGIC = b"DELTA-T09-JPEG\x00"
-_METADATA_CAPACITY = 512
-_LENGTH = struct.Struct(">I")
-
-
-def _deserialize_payload(payload: bytes) -> tuple[dict[str, object], list[np.ndarray]]:
-    assert payload.startswith(_PAYLOAD_MAGIC)
-    metadata_length_offset = len(_PAYLOAD_MAGIC)
-    (metadata_length,) = _LENGTH.unpack_from(payload, metadata_length_offset)
-    metadata_offset = metadata_length_offset + _LENGTH.size
-    metadata = json.loads(
-        payload[metadata_offset : metadata_offset + metadata_length].decode("utf-8")
-    )
-
-    frames: list[np.ndarray] = []
-    offset = metadata_offset + _METADATA_CAPACITY
-    for _ in range(int(metadata["frame_count"])):
-        (frame_length,) = _LENGTH.unpack_from(payload, offset)
-        offset += _LENGTH.size
-        assert frame_length > 0
-        encoded = np.frombuffer(payload[offset : offset + frame_length], dtype=np.uint8)
-        frame = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
-        assert frame is not None
-        frames.append(frame)
-        offset += frame_length
-    assert offset == len(payload)
-    return metadata, frames
-
-
-@pytest.fixture
-def tiny_mp4(tmp_path: Path) -> Path:
-    """Crea el MP4 mínimo necesario para probar el decodificador real."""
-
-    path = tmp_path / "tiny.mp4"
+def _make_video(
+    path: Path,
+    *,
+    width: int,
+    height: int,
+    fps: float,
+    frames: int,
+) -> Path:
     writer = cv2.VideoWriter(
         str(path),
         cv2.VideoWriter_fourcc(*"mp4v"),
-        5.0,
-        (64, 48),
+        fps,
+        (width, height),
     )
-    assert writer.isOpened(), "OpenCV no pudo crear el MP4 temporal de prueba"
-    try:
-        for value in (0, 80, 160):
-            writer.write(np.full((48, 64, 3), value, dtype=np.uint8))
-    finally:
-        writer.release()
-    assert path.stat().st_size > 0
+    assert writer.isOpened()
+    for index in range(frames):
+        value = index % 256
+        writer.write(np.full((height, width, 3), value, dtype=np.uint8))
+    writer.release()
     return path
 
 
-def test_processes_real_mp4_and_serializes_frames_and_metadata(tiny_mp4: Path) -> None:
-    result = VideoPreprocessor().process(tiny_mp4)
+def test_converts_to_raw_grayscale_and_reduces_fps(tmp_path: Path) -> None:
+    source = _make_video(
+        tmp_path / "tiny.mp4", width=64, height=48, fps=10, frames=10
+    )
 
-    assert result.payload
-    assert result.metadata.frame_count == 3
-    assert result.metadata.height == 48
+    result = VideoPreprocessor().process(source)
+
+    assert result.metadata.frame_count == 5
     assert result.metadata.width == 64
-    assert result.metadata.channels == 3
-    assert result.metadata.fps == pytest.approx(5.0, abs=0.25)
+    assert result.metadata.height == 48
+    assert result.metadata.channels == 1
+    assert result.metadata.fps == pytest.approx(5, abs=0.1)
     assert result.metadata.dtype == "uint8"
-
-    metadata, frames = _deserialize_payload(result.payload)
-
-    assert metadata == {
-        "version": 1,
-        "frame_encoding": "jpeg",
-        "frame_count": result.metadata.frame_count,
-        "height": result.metadata.height,
-        "width": result.metadata.width,
-        "channels": result.metadata.channels,
-        "fps": result.metadata.fps,
-        "dtype": result.metadata.dtype,
-    }
-    assert len(frames) == 3
-    assert all(frame.shape == (48, 64, 3) for frame in frames)
-    assert all(frame.dtype == np.uint8 for frame in frames)
+    assert result.metadata.version == 2
+    assert len(result.payload) == 5 * 64 * 48
+    frames = np.frombuffer(result.payload, dtype=np.uint8).reshape(5, 48, 64)
     assert [float(frame.mean()) for frame in frames] == sorted(
         float(frame.mean()) for frame in frames
     )
-    assert len(result.payload) < sum(frame.nbytes for frame in frames)
 
 
-@pytest.mark.parametrize(
-    ("filename", "content"),
-    [
-        pytest.param("empty.mp4", b"", id="empty"),
-        pytest.param("corrupto.mp4", b"esto no es un archivo MP4", id="corrupt"),
-    ],
-)
-def test_rejects_empty_or_corrupt_mp4(
-    tmp_path: Path,
-    filename: str,
-    content: bytes,
-) -> None:
-    path = tmp_path / filename
-    path.write_bytes(content)
+def test_downscales_but_does_not_upscale(tmp_path: Path) -> None:
+    large = _make_video(
+        tmp_path / "large.mp4", width=640, height=480, fps=2, frames=2
+    )
+    small = _make_video(
+        tmp_path / "small.mp4", width=64, height=48, fps=2, frames=2
+    )
 
-    with pytest.raises(VideoPreprocessingError, match="OpenCV no pudo abrir|no contiene frames"):
-        VideoPreprocessor().process(path)
+    large_result = VideoPreprocessor().process(large)
+    small_result = VideoPreprocessor().process(small)
+
+    assert (large_result.metadata.width, large_result.metadata.height) == (320, 240)
+    assert (small_result.metadata.width, small_result.metadata.height) == (64, 48)
 
 
-def test_rejects_nonexistent_video(tmp_path: Path) -> None:
-    missing = tmp_path / "missing.mp4"
+def test_rejects_video_longer_than_twenty_seconds(tmp_path: Path) -> None:
+    source = _make_video(
+        tmp_path / "long.mp4", width=16, height=16, fps=2, frames=42
+    )
 
-    with pytest.raises(VideoPreprocessingError, match="OpenCV no pudo abrir"):
-        VideoPreprocessor().process(missing)
+    with pytest.raises(VideoPreprocessingError, match="duración máxima"):
+        VideoPreprocessor().process(source)
+
+
+@pytest.mark.parametrize("content", [b"", b"not-an-mp4"])
+def test_rejects_invalid_mp4(tmp_path: Path, content: bytes) -> None:
+    source = tmp_path / "invalid.mp4"
+    source.write_bytes(content)
+    with pytest.raises(VideoPreprocessingError):
+        VideoPreprocessor().process(source)
+
+
+def test_reconstructs_a_playable_mp4(tmp_path: Path) -> None:
+    source = _make_video(
+        tmp_path / "source.mp4", width=64, height=48, fps=2, frames=4
+    )
+    processed = VideoPreprocessor().process(source)
+
+    destination = VideoReconstructor().reconstruct(
+        processed.payload,
+        processed.metadata,
+        "12345678-1234-5678-1234-567812345678",
+        tmp_path / "output",
+    )
+
+    assert destination.is_file()
+    capture = cv2.VideoCapture(str(destination))
+    assert capture.isOpened()
+    assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 4
+    assert int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) == 64
+    assert int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) == 48
+    capture.release()

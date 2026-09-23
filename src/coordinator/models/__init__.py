@@ -1,9 +1,13 @@
-"""Public models exposed by the Coordinator API."""
+"""Modelos públicos del Coordinator."""
 
 from .video import (
     ConfirmationRequest,
+    FailureRequest,
     PartyEndpoint,
-    PartyShareStatus,
+    PartyReadyRequest,
+    PartyStatus,
+    VideoMetadata,
+    VideoPrepareRequest,
     VideoRegistrationRequest,
     VideoRegistrationResponse,
     VideoStateResponse,
@@ -12,11 +16,14 @@ from .video import (
 
 __all__ = [
     "ConfirmationRequest",
+    "FailureRequest",
     "PartyEndpoint",
-    "PartyShareStatus",
+    "PartyReadyRequest",
+    "PartyStatus",
+    "VideoMetadata",
+    "VideoPrepareRequest",
     "VideoRegistrationRequest",
     "VideoRegistrationResponse",
     "VideoStateResponse",
     "VideoStatus",
 ]
-

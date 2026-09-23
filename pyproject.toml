@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proyecto-delta"
-version = "0.1.0"
-description = "Entrada segura y distribución provisional de secret shares para Proyecto Delta"
+version = "0.2.0"
+description = "MVP MPC de video con tres parties MP-SPDZ y ExternalIO"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.27,<1.0",
     "numpy>=1.26,<3.0",
     "opencv-python-headless>=4.9,<5.0",
+    "gmpy2>=2.1,<3.0",
 ]
 
 [project.scripts]
@@ -25,3 +26,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "e2e: prueba real que requiere Docker Compose y tres runtimes MP-SPDZ",
+]
