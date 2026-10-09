@@ -1,8 +1,9 @@
 # Proyecto Delta — MVP MPC Sprint 1
 
-MVP funcional de infraestructura MPC para video. Un cliente confiable reduce un
-MP4 local a grayscale, como máximo 320x240 y 5 FPS, introduce sus pixels por el
-`ExternalIO` oficial de MP-SPDZ y recibe el resultado de un programa identidad.
+MVP funcional de infraestructura MPC para video. Un cliente confiable detecta
+rostros localmente con YuNet, anota las detecciones y reduce un MP4 a grayscale,
+como máximo 320x240 y 5 FPS. Después introduce sus pixels por el `ExternalIO`
+oficial de MP-SPDZ y recibe el resultado de un programa identidad.
 El cliente reconstruye el resultado en:
 
 ```text
@@ -10,7 +11,7 @@ output/<video_id>/reconstructed.mp4
 ```
 
 El MP4 original y el resultado no anonimizado nunca se envían al Coordinator ni
-a una party individual. Computer Vision se implementará en otro sprint.
+a una party individual.
 
 ## Arquitectura
 
@@ -133,7 +134,8 @@ parties no tienen ese volumen.
 La CLI:
 
 1. valida el MP4 y el límite de 20 segundos;
-2. reduce localmente resolución/FPS y convierte a grayscale `uint8`;
+2. ejecuta localmente YuNet en los frames muestreados, anota rostros detectados,
+   reduce resolución/FPS y convierte a grayscale `uint8`;
 3. registra metadata pública y obtiene un UUID;
 4. prepara los tres Node Agents;
 5. envía pixels privados a los tres runtimes mediante ExternalIO;

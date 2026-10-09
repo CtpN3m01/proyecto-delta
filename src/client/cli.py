@@ -6,6 +6,10 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
+import cv2 as cv
+
+from client.preprocessing.yunet import YuNet
+
 from client.networking import (
     CoordinatorClient,
     CoordinatorClientError,
@@ -21,6 +25,13 @@ from client.preprocessing import (
 )
 from mpc import MpcExternalClient, MpcExternalIOError
 
+backend_target_pairs = (
+    (cv.dnn.DNN_BACKEND_OPENCV, cv.dnn.DNN_TARGET_CPU),
+    (cv.dnn.DNN_BACKEND_CUDA, cv.dnn.DNN_TARGET_CUDA),
+    (cv.dnn.DNN_BACKEND_CUDA, cv.dnn.DNN_TARGET_CUDA_FP16),
+    (cv.dnn.DNN_BACKEND_TIMVX, cv.dnn.DNN_TARGET_NPU),
+    (cv.dnn.DNN_BACKEND_CANN, cv.dnn.DNN_TARGET_NPU),
+)
 
 class ClientInputError(ValueError):
     """La entrada local no cumple el perfil del MVP."""
@@ -41,6 +52,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preprocesa un MP4, ejecuta MPC y reconstruye el resultado.",
     )
     upload.add_argument("video", type=Path, help="Ruta local al archivo .mp4")
+    upload.add_argument("--conf-threshold", "--conf_threshold", type=float, default=0.9)
+    upload.add_argument("--nms-threshold", "--nms_threshold", type=float, default=0.3)
+    upload.add_argument("--top-k", "--top_k", type=int, default=5000)
+    upload.add_argument(
+        "--backend-target",
+        "--backend_target",
+        "-bt",
+        type=int,
+        choices=range(len(backend_target_pairs)),
+        default=0,
+        help=(
+            "Backend/target YuNet: 0 OpenCV+CPU (predeterminado), "
+            "1 CUDA, 2 CUDA FP16, 3 TIM-VX+NPU, 4 CANN+NPU."
+        ),
+    )
     return parser
 
 
@@ -61,13 +87,14 @@ def upload_video(
     preprocessor: VideoPreprocessor,
     mpc_client: MpcExternalClient,
     reconstructor: VideoReconstructor,
+    model: YuNet,
     output_root: str | Path = "output",
 ) -> int:
     path = _validated_video_path(video_path)
     print("Proyecto Delta - MPC MVP")
     print(f"\nVideo: {path.name}")
 
-    processed = preprocessor.process(path)
+    processed = preprocessor.process(path, model)
     metadata = processed.metadata.as_dict()
     print("[OK] Video validado y preprocesado localmente")
     print(
@@ -164,10 +191,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command != "upload":
         return 2
 
+    backend_id = backend_target_pairs[args.backend_target][0]
+    target_id = backend_target_pairs[args.backend_target][1]
+
     coordinator_url = os.getenv("COORDINATOR_URL", "http://localhost:8000")
     output_root = os.getenv("DELTA_OUTPUT_DIR", "output")
     try:
         return upload_video(
+
             video_path=args.video,
             coordinator=CoordinatorClient(coordinator_url),
             party_client=PartyClient(),
@@ -175,6 +206,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             mpc_client=MpcExternalClient(),
             reconstructor=VideoReconstructor(),
             output_root=output_root,
+            model=YuNet(modelPath='./src/client/preprocessing/face_detection_yunet_2023mar.onnx',
+                  inputSize=[320, 320],
+                  confThreshold=args.conf_threshold,
+                  nmsThreshold=args.nms_threshold,
+                  topK=args.top_k,
+                  backendId=backend_target_pairs[args.backend_target][0],
+                  targetId=backend_target_pairs[args.backend_target][1],
+                  )
         )
     except (
         ClientInputError,
