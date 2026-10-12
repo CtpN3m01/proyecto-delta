@@ -5,6 +5,7 @@ from client.preprocessing.video_preprocessor import (
     VideoMetadata,
     VideoPreprocessingError,
     VideoPreprocessor,
+    scale_bounding_box,
 )
 from client.preprocessing.video_reconstructor import (
     VideoReconstructionError,
@@ -19,4 +20,5 @@ __all__ = [
     "VideoPreprocessor",
     "VideoReconstructionError",
     "VideoReconstructor",
+    "scale_bounding_box",
 ]

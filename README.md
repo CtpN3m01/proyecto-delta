@@ -2,7 +2,8 @@
 
 MVP funcional de infraestructura MPC para video. Un cliente confiable detecta
 rostros localmente con YuNet, anota las detecciones y reduce un MP4 a grayscale,
-como máximo 320x240 y 5 FPS. Después introduce sus pixels por el `ExternalIO`
+por defecto hasta 640x480 y 10 FPS, conservando la proporción y sin ampliar videos
+pequeños. Después introduce sus pixels por el `ExternalIO`
 oficial de MP-SPDZ y recibe el resultado de un programa identidad.
 El cliente reconstruye el resultado en:
 
@@ -24,7 +25,8 @@ Cliente confiable
           ├──────────────────────────────> replicated-ring Party 1
           └──────────────────────────────> replicated-ring Party 2
                                              │
-                           delta_video_identity.mpc
+                         delta_video_anonymize.mpc
+                         (identity / anonymize)
                                              │
                          reveal_to_clients (solo al cliente)
                                              ▼
@@ -42,7 +44,8 @@ Decisiones del MVP:
 - exactamente tres parties;
 - replicated secret sharing sobre ring de 64 bits;
 - modelo semi-honesto de desarrollo (`program.active = False`);
-- programa propio `delta_video_identity.mpc`;
+- programa `delta_video_anonymize.mpc` con selección explícita; se conserva
+  `delta_video_identity.mpc` como programa anterior compatible;
 - bloques de 4096 pixels;
 - un único job activo;
 - estado y manifests solo en memoria;
@@ -118,6 +121,73 @@ El comando equivalente instalado es:
 delta upload /ruta/video.mp4
 ```
 
+### Resolución para MPC
+
+`MPC_MAX_WIDTH` y `MPC_MAX_HEIGHT` configuran la caja máxima en el cliente,
+Coordinator y parties. El perfil predeterminado es 640x480; si el alto no se
+indica, se deriva como 3/4 del ancho. La imagen conserva su propia proporción
+y se alinea a dimensiones pares para MP4. YuNet sigue recibiendo los cuadros
+originales a color antes de esta reducción; los píxeles MPC siguen en gris.
+
+La CLI puede elegir una caja menor que la admitida por los servicios:
+
+```bash
+python -m client upload /ruta/video.mp4 --mpc-max-width 320 --mpc-max-height 240
+```
+
+Para cambiar el máximo admitido por los servicios, configurar ambas variables
+en `.env` y recrear Compose. Para la CLI del host se usan las mismas variables
+de entorno o los argumentos anteriores; no se carga `.env` automáticamente.
+Los perfiles admitidos están acotados a 640x480; no se cambió el protocolo MPC.
+
+Se probaron cuatro cuadros a 2 FPS mediante tres parties reales: en la medición
+final con muestreo de memoria, MPC tardó 17,02 s a 320x240, 37,12 s a 480x360
+y 65,09 s a 640x480 en Docker local. El flujo completo tardó 18,15 / 44,21 /
+72,46 s respectivamente. ExternalIO privado intercambió 22,12 / 49,85 / 88,48 MB
+de aplicación (envío + recepción; no incluye TLS/TCP ni tráfico entre parties).
+
+### FPS para MPC
+
+El cliente muestrea hasta **10 FPS** por defecto y conserva el límite de
+20 segundos: como máximo 200 cuadros. Si el original tiene menos FPS, conserva
+su frecuencia; no duplica ni inventa cuadros. YuNet analiza cada cuadro
+seleccionado en su resolución original y a color, antes de gris/resize.
+
+Para volver al menor costo de 5 FPS, sin cambiar la resolución:
+
+```bash
+python -m client upload /ruta/video.mp4 --mpc-fps 5
+```
+
+`--mpc-fps` acepta valores mayores que 0 y hasta 10. La reconstrucción utiliza
+los FPS del muestreo para mantener la duración, no para acelerar el video.
+Pasar de 5 a 10 FPS con la misma duración y resolución implica aproximadamente
+el doble de cuadros y comunicación; el tiempo real debe medirse. No cambia el
+protocolo ni el programa MPC de identidad.
+
+Si Compose ya estaba levantado con el límite anterior de 5 FPS/100 cuadros,
+ejecutar `docker compose up --build -d` para actualizar también las validaciones
+del Coordinator y las parties. Cambiar solo el cliente no basta.
+
+Se compararon ambos perfiles con el mismo clip original a color de 640x480,
+30 FPS y un segundo, mediante las tres parties reales del Compose habitual:
+
+| Muestreo | Cuadros procesados | Tiempo MPC | Flujo CLI completo | ExternalIO privado (MB) |
+|---|---:|---:|---:|---:|
+| 5 FPS (`--mpc-fps 5`) | 5 | 46,76 s | 53,53 s | 110,61 |
+| 10 FPS (predeterminado) | 10 | 95,69 s | 102,64 s | 221,21 |
+
+El tráfico medido suma bytes de aplicación enviados y recibidos; excluye TLS/TCP,
+la cabecera pública y comunicación entre parties. Ambos casos conservaron
+identidad exacta antes de codificar, dimensiones y orden temporal. YuNet recibió
+los cuadros originales BGR. A 10 FPS se observaron máximos de 54,60–55,95 MiB
+por party y 107,84 MiB de memoria del cliente; las parties se midieron por
+muestreo, no mediante un pico instantáneo garantizado. Los artefactos locales
+quedan bajo `.runtime/fps-evaluation/`.
+
+El máximo de entrada no demuestra rendimiento aceptable: no se ha verificado
+un video completo de 20 segundos a 640x480 y 10 FPS ni ejecución en Raspberry Pi.
+
 ### Opción B: cliente confiable en Docker
 
 Si el video se encuentra dentro de la carpeta del repositorio:
@@ -130,6 +200,27 @@ Solo `delta-client` monta el repositorio que contiene el video. Coordinator y
 parties no tienen ese volumen.
 
 ## Flujo y validaciones
+
+### Anonimización genérica T025
+
+`upload` conserva identidad por defecto y lo indica en consola. Para seleccionar
+anonimización se requieren regiones explícitas; no se integran todavía los
+detectores T021/T022/T023. La API Python recibe un `AnonymizationPlan` preparado
+con T024; para diagnóstico la CLI admite un JSON de resultados por cuadro:
+
+```bash
+python -m client upload /ruta/video.mp4 --processing-mode anonymize --regions-json /ruta/regiones.json
+```
+
+El archivo requiere las dimensiones MPC reales y resultados explícitos para
+todos los cuadros, incluidos los vacíos. Ver formato e integración en
+[T25](TareasDeInvestigacion/T25.md) y contrato en [T24](TareasDeInvestigacion/T24.md).
+Las máscaras se envían públicamente por bloques de 4096 posiciones; los píxeles
+originales entran privadamente y MP-SPDZ calcula `pixel * (1 - máscara)` antes
+de revelar solo el resultado al cliente. No hay fallback a identidad. Se debe
+reconstruir Compose para usar `MPC_PROGRAM=delta_video_anonymize`.
+
+### Flujo de identidad compatible
 
 La CLI:
 
@@ -163,7 +254,8 @@ python -m pip install -e .
 python -m pytest -m "not e2e"
 ```
 
-Con Compose saludable, ejecutar el smoke test real (64x48, 2 FPS, 2 s):
+Con Compose actualizado y saludable, ejecutar el smoke test real
+(64x48, 10 FPS, 1 s; original a 20 FPS):
 
 PowerShell:
 
@@ -190,11 +282,14 @@ runtimes. Los resultados permanecen bajo `output/` en el cliente.
 
 ## Limitaciones del Sprint 1
 
-- el cálculo es identidad; todavía no hay rostros, placas, blur ni modelos;
+- la CLI conserva identidad por defecto; anonimización negra exige selección
+  explícita y regiones completas. MPC no ejecuta modelos; YuNet detecta localmente,
+  pero sus detecciones no alimentan automáticamente la anonimización todavía;
 - las tres parties viven en un solo host y una misma organización;
 - los certificados son de desarrollo y la imagen compartida puede ver el mismo
   directorio de certificados;
 - no hay base de datos ni recuperación tras reiniciar el Coordinator;
 - se procesa un video a la vez;
-- perfil máximo: 20 s, 320x240, grayscale, 5 FPS;
+- límite de entrada: 20 s y 10 FPS (hasta 200 cuadros), grayscale; caja espacial
+  configurable, 640x480 por defecto, verificada únicamente en clips pequeños;
 - no se ha preparado todavía el despliegue ARM/Raspberry Pi.

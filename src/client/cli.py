@@ -1,6 +1,7 @@
 """CLI confiable para el MVP de video identidad con MP-SPDZ."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -23,7 +24,10 @@ from client.preprocessing import (
     VideoReconstructionError,
     VideoReconstructor,
 )
+from client.anonymization import AnonymizationPlan, prepare_anonymization
+from client.regions import DetectedRegion, DetectorExecutionError, FrameDetections
 from mpc import MpcExternalClient, MpcExternalIOError
+from mpc.video_profile import DEFAULT_MPC_FPS, MAX_CONFIGURED_FPS
 
 backend_target_pairs = (
     (cv.dnn.DNN_BACKEND_OPENCV, cv.dnn.DNN_TARGET_CPU),
@@ -52,6 +56,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preprocesa un MP4, ejecuta MPC y reconstruye el resultado.",
     )
     upload.add_argument("video", type=Path, help="Ruta local al archivo .mp4")
+    upload.add_argument(
+        "--processing-mode", choices=("identity", "anonymize"), default="identity",
+        help="Selección explícita: identity conserva el MVP; anonymize requiere regiones.",
+    )
+    upload.add_argument(
+        "--regions-json", type=Path,
+        help="Regiones de prueba/manuales en coordenadas MPC; no integra detectores.",
+    )
+    upload.add_argument(
+        "--mpc-max-width", type=int, default=None,
+        help="Ancho máximo para MPC; predeterminado: MPC_MAX_WIDTH/perfil compartido.",
+    )
+    upload.add_argument(
+        "--mpc-max-height", type=int, default=None,
+        help="Alto máximo para MPC; predeterminado: MPC_MAX_HEIGHT o 3/4 del ancho.",
+    )
+    upload.add_argument(
+        "--mpc-fps", type=float, default=DEFAULT_MPC_FPS,
+        help=(
+            f"FPS de muestreo para MPC; predeterminado: {DEFAULT_MPC_FPS:g}, "
+            f"máximo: {MAX_CONFIGURED_FPS}. No aumenta los FPS del original."
+        ),
+    )
     upload.add_argument("--conf-threshold", "--conf_threshold", type=float, default=0.9)
     upload.add_argument("--nms-threshold", "--nms_threshold", type=float, default=0.3)
     upload.add_argument("--top-k", "--top_k", type=int, default=5000)
@@ -80,6 +107,43 @@ def _validated_video_path(path: Path) -> Path:
     return path
 
 
+def _plan_from_json(path: Path, metadata) -> AnonymizationPlan:
+    """Entrada de diagnóstico; el transporte interno siempre usa tipos T024."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ClientInputError(f"No se pudo leer el JSON de regiones: {exc}") from exc
+    if not isinstance(data, dict) or set(data) != {"width", "height", "frames"}:
+        raise ClientInputError("El JSON requiere width, height y frames explícitos")
+    size = (data["width"], data["height"])
+    if size != (metadata.width, metadata.height):
+        raise ClientInputError("El JSON debe referirse a las dimensiones MPC reales")
+    if not isinstance(data["frames"], list):
+        raise ClientInputError("frames debe ser una lista completa de resultados")
+    frames = []
+    for record in data["frames"]:
+        if not isinstance(record, dict):
+            raise ClientInputError("Cada fotograma debe declarar su resultado")
+        if record.get("status") == "success":
+            if set(record) != {"frame_index", "status", "regions"} or not isinstance(record["regions"], list):
+                raise ClientInputError("Un éxito requiere frame_index, status y regions, incluso vacías")
+            detections = []
+            for region in record["regions"]:
+                if not isinstance(region, dict) or set(region) != {"region_type", "x", "y", "width", "height"}:
+                    raise ClientInputError("Cada región requiere region_type, x, y, width y height")
+                detections.append(DetectedRegion(**region))
+            frames.append(FrameDetections.success(record["frame_index"], detections))
+        elif record.get("status") == "failed":
+            if set(record) != {"frame_index", "status", "error"}:
+                raise ClientInputError("Un fallo requiere frame_index, status y error")
+            frames.append(FrameDetections.failure(record["frame_index"], record["error"]))
+        else:
+            raise ClientInputError("status debe ser success o failed; no se infiere éxito")
+    return prepare_anonymization(
+        frames, source_size=size, target_size=size, frame_count=metadata.frame_count
+    )
+
+
 def upload_video(
     video_path: Path,
     coordinator: CoordinatorClient,
@@ -89,13 +153,37 @@ def upload_video(
     reconstructor: VideoReconstructor,
     model: YuNet,
     output_root: str | Path = "output",
+    *,
+    processing_mode: str = "identity",
+    anonymization_plan: AnonymizationPlan | None = None,
+    regions_json: Path | None = None,
 ) -> int:
     path = _validated_video_path(video_path)
+    if processing_mode not in ("identity", "anonymize"):
+        raise ClientInputError("processing_mode debe ser identity o anonymize")
+    if processing_mode == "identity" and (anonymization_plan is not None or regions_json is not None):
+        raise ClientInputError("Las regiones requieren seleccionar explícitamente anonymize")
+    if processing_mode == "anonymize" and (anonymization_plan is None) == (regions_json is None):
+        raise ClientInputError("Anonimización requiere un plan o JSON, no ambos ni ninguno")
     print("Proyecto Delta - MPC MVP")
     print(f"\nVideo: {path.name}")
 
     processed = preprocessor.process(path, model)
     metadata = processed.metadata.as_dict()
+    if processing_mode == "anonymize":
+        if regions_json is not None:
+            anonymization_plan = _plan_from_json(regions_json, processed.metadata)
+        if not isinstance(anonymization_plan, AnonymizationPlan):
+            raise ClientInputError("Se requiere un plan de anonimización validado")
+        if not anonymization_plan.detections_complete:
+            raise ClientInputError("Prepare el plan con resultados explícitos de todos los fotogramas")
+        if (anonymization_plan.width, anonymization_plan.height, anonymization_plan.frame_count) != (
+            processed.metadata.width, processed.metadata.height, processed.metadata.frame_count
+        ) or len(processed.payload) != anonymization_plan.payload_size:
+            raise ClientInputError("El plan no coincide con los fotogramas MPC realmente procesados")
+        print("[MODO] ANONIMIZACIÓN MPC; regiones proporcionadas explícitamente")
+    else:
+        print("[MODO] IDENTIDAD; no anonimiza")
     print("[OK] Video validado y preprocesado localmente")
     print(
         f"     {processed.metadata.frame_count} frames, "
@@ -123,9 +211,13 @@ def upload_video(
             party_client.start_job(endpoint.id, endpoint.url, registration.id)
         coordinator.start(registration.id)
 
-        result = mpc_client.process_identity(processed.payload)
+        if processing_mode == "anonymize":
+            result = mpc_client.process_anonymize(processed.payload, anonymization_plan)
+            anonymization_plan.validate_result(processed.payload, result)
+        else:
+            result = mpc_client.process_identity(processed.payload)
         print("[OK] Datos enviados y recibidos mediante MP-SPDZ ExternalIO")
-        if result != processed.payload:
+        if processing_mode == "identity" and result != processed.payload:
             raise MpcResultMismatchError(
                 "El resultado MPC no coincide exactamente con el video preprocesado"
             )
@@ -202,10 +294,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             video_path=args.video,
             coordinator=CoordinatorClient(coordinator_url),
             party_client=PartyClient(),
-            preprocessor=VideoPreprocessor(),
+            preprocessor=VideoPreprocessor(
+                max_width=args.mpc_max_width,
+                max_height=args.mpc_max_height,
+                target_fps=args.mpc_fps,
+            ),
             mpc_client=MpcExternalClient(),
             reconstructor=VideoReconstructor(),
             output_root=output_root,
+            processing_mode=args.processing_mode,
+            regions_json=args.regions_json,
             model=YuNet(modelPath='./src/client/preprocessing/face_detection_yunet_2023mar.onnx',
                   inputSize=[320, 320],
                   confThreshold=args.conf_threshold,
@@ -223,6 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         VideoReconstructionError,
         MpcExternalIOError,
         MpcResultMismatchError,
+        DetectorExecutionError,
         ValueError,
     ) as exc:
         print(f"Error: {exc}", file=sys.stderr)

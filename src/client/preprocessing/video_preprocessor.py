@@ -8,10 +8,40 @@ import cv2
 import numpy as np
 
 from client.preprocessing.yunet import YuNet
+from mpc.video_profile import (
+    DEFAULT_MPC_FPS,
+    MAX_CONFIGURED_FPS,
+    MAX_VIDEO_DURATION_SECONDS,
+    MpcVideoProfile,
+)
 
 
 class VideoPreprocessingError(RuntimeError):
     """El MP4 no cumple el perfil o no pudo decodificarse."""
+
+
+def scale_bounding_box(
+    box: tuple[float, float, float, float],
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> tuple[float, float, float, float]:
+    """Escala (x, y, ancho, alto) utilizando tamaños reales (ancho, alto).
+
+    Es geometría local para un resize sin recorte ni padding, no un contrato
+    de regiones. No redondea ni recorta: T024 podrá decidir esa política.
+    """
+    if len(box) != 4 or len(source_size) != 2 or len(target_size) != 2:
+        raise ValueError("Se requieren una caja de cuatro valores y dos tamaños")
+    dimensions = (*source_size, *target_size)
+    if any(not math.isfinite(value) or value <= 0 for value in dimensions):
+        raise ValueError("Las dimensiones deben ser positivas y finitas")
+    if any(not math.isfinite(value) for value in box) or box[2] < 0 or box[3] < 0:
+        raise ValueError("La caja debe ser finita y no tener tamaños negativos")
+    scale_x = target_size[0] / source_size[0]
+    scale_y = target_size[1] / source_size[1]
+    x, y, width, height = box
+    return x * scale_x, y * scale_y, width * scale_x, height * scale_y
+
 
 @dataclass(frozen=True)
 class VideoMetadata:
@@ -43,20 +73,24 @@ class VideoPreprocessor:
     def __init__(
         self,
         *,
-        max_duration_seconds: float = 20.0,
-        max_width: int = 320,
-        max_height: int = 240,
-        target_fps: float = 5.0,
+        max_duration_seconds: float = MAX_VIDEO_DURATION_SECONDS,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        target_fps: float = DEFAULT_MPC_FPS,
     ) -> None:
-        if max_duration_seconds <= 0:
-            raise ValueError("max_duration_seconds debe ser positivo")
-        if max_width <= 0 or max_height <= 0:
-            raise ValueError("Las dimensiones máximas deben ser positivas")
-        if target_fps <= 0:
-            raise ValueError("target_fps debe ser positivo")
+        if (
+            not math.isfinite(max_duration_seconds)
+            or not 0 < max_duration_seconds <= MAX_VIDEO_DURATION_SECONDS
+        ):
+            raise ValueError(
+                f"max_duration_seconds debe ser positivo y no superar {MAX_VIDEO_DURATION_SECONDS}"
+            )
+        if not math.isfinite(target_fps) or not 0 < target_fps <= MAX_CONFIGURED_FPS:
+            raise ValueError(f"target_fps debe ser positivo y no superar {MAX_CONFIGURED_FPS}")
+        profile = MpcVideoProfile.from_environment(max_width, max_height)
         self._max_duration = float(max_duration_seconds)
-        self._max_width = int(max_width)
-        self._max_height = int(max_height)
+        self._max_width = profile.max_width
+        self._max_height = profile.max_height
         self._target_fps = float(target_fps)
 
     @staticmethod
@@ -202,6 +236,10 @@ class VideoPreprocessor:
 
     def _scaled_size(self, width: int, height: int) -> tuple[int, int]:
         scale = min(1.0, self._max_width / width, self._max_height / height)
-        target_width = max(1, int(round(width * scale)))
-        target_height = max(1, int(round(height * scale)))
+        # mp4v puede truncar dimensiones impares. Alinear hacia abajo evita
+        # ampliar la imagen o reconstruir con un tamaño distinto al anunciado.
+        target_width = math.floor(width * scale + 1e-9) // 2 * 2
+        target_height = math.floor(height * scale + 1e-9) // 2 * 2
+        if target_width < 2 or target_height < 2:
+            raise VideoPreprocessingError("El tamaño procesado debe ser al menos 2x2")
         return target_width, target_height
