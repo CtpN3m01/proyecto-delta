@@ -21,6 +21,35 @@ class VideoPreprocessingError(RuntimeError):
     """El MP4 no cumple el perfil o no pudo decodificarse."""
 
 
+FACE_CONFIDENCE_THRESHOLD = 0.6
+
+
+@dataclass(frozen=True)
+class FaceRegion:
+    """Caja de un rostro en las coordenadas del frame incluido en el payload."""
+
+    frame_id: int
+    x: int
+    y: int
+    width: int
+    height: int
+    confidence: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.frame_id, bool) or not isinstance(self.frame_id, int) or self.frame_id < 0:
+            raise ValueError("frame_id debe ser un entero no negativo")
+        for name in ("x", "y"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} debe ser un entero no negativo")
+        for name in ("width", "height"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} debe ser un entero positivo")
+        if not math.isfinite(self.confidence):
+            raise ValueError("confidence debe ser finita")
+
+
 def scale_bounding_box(
     box: tuple[float, float, float, float],
     source_size: tuple[int, int],
@@ -65,6 +94,10 @@ class PreprocessedVideo:
     payload: bytes
     metadata: VideoMetadata
     source_size: tuple[int, int] | None = None
+    regions: tuple[FaceRegion, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "regions", tuple(self.regions))
 
 
 class VideoPreprocessor:
@@ -96,51 +129,34 @@ class VideoPreprocessor:
         self._target_fps = float(target_fps)
 
     @staticmethod
-    def visualize(image, results, box_color=(0, 255, 0), text_color=(0, 0, 255), fps=None):
-        output = image.copy()
-        landmark_color = [
-            (255,   0,   0), # right eye
-            (  0,   0, 255), # left eye
-            (  0, 255,   0), # nose tip
-            (255,   0, 255), # right mouth corner
-            (  0, 255, 255)  # left mouth corner
-        ]
-
-        if fps is not None:
-            cv2.putText(output, 'FPS: {:.2f}'.format(fps), (0, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color)
-
-        for det in results:
-            bbox = det[0:4].astype(np.int32)
-            cv2.rectangle(output, (bbox[0], bbox[1]), (bbox[0]+bbox[2], bbox[1]+bbox[3]), box_color, 2)
-
-            conf = det[-1]
-            cv2.putText(output, '{:.4f}'.format(conf), (bbox[0], bbox[1]+12), cv2.FONT_HERSHEY_DUPLEX, 0.5, text_color)
-
-            landmarks = det[4:14].astype(np.int32).reshape((5,2))
-            for idx, landmark in enumerate(landmarks):
-                cv2.circle(output, landmark, 2, landmark_color[idx], 2)
-
-        return output
-
-    def _model_recognition(self, image, model, decoded_index):
-        h, w, _ = image.shape
-
-        # Inference
-        model.setInputSize([w, h])
-        results = model.infer(image)
-
-        # Print results
-        print('{} faces detected.'.format(results.shape[0]))
-        for idx, det in enumerate(results):
-            print('{}: {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f}'.format(
-                idx, *det[:-1])
-            )
-
-        # Draw results on the input image
-        image = self.visualize(image, results)
-        results_dir = Path("results")
-        results_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(results_dir / f"result{decoded_index}.jpg"), image)
+    def _face_regions(results: np.ndarray, frame_id: int,
+                      source_size: tuple[int, int], target_size: tuple[int, int]) -> list[FaceRegion]:
+        """Convierte cajas YuNet a límites enteros recortados del frame final."""
+        if results is None:
+            return []
+        source_width, source_height = source_size
+        target_width, target_height = target_size
+        scale_x = target_width / source_width
+        scale_y = target_height / source_height
+        regions = []
+        for detection in results:
+            if len(detection) < 5:
+                raise VideoPreprocessingError("YuNet devolvió una detección facial incompleta")
+            x, y, width, height = (float(value) for value in detection[:4])
+            confidence = float(detection[-1])
+            if not all(math.isfinite(value) for value in (x, y, width, height, confidence)) or width <= 0 or height <= 0:
+                raise VideoPreprocessingError("YuNet devolvió una caja facial inválida")
+            if confidence <= FACE_CONFIDENCE_THRESHOLD:
+                continue
+            # Floor el borde superior/izquierdo y ceil el inferior/derecho
+            # para conservar la cobertura tras el resize.
+            left = max(0, min(target_width, math.floor(x * scale_x)))
+            top = max(0, min(target_height, math.floor(y * scale_y)))
+            right = max(0, min(target_width, math.ceil((x + width) * scale_x)))
+            bottom = max(0, min(target_height, math.ceil((y + height) * scale_y)))
+            if right > left and bottom > top:
+                regions.append(FaceRegion(frame_id, left, top, right - left, bottom - top, confidence))
+        return regions
 
     def process(
         self,
@@ -178,6 +194,7 @@ class VideoPreprocessor:
         target_size: tuple[int, int] | None = None
         source_size: tuple[int, int] | None = None
         frame_bytes: list[bytes] = []
+        regions: list[FaceRegion] = []
 
         try:
             while True:
@@ -197,26 +214,21 @@ class VideoPreprocessor:
                 original_size = (frame.shape[1], frame.shape[0])
                 if source_size is None:
                     source_size = original_size
+                if (frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8):
+                    raise VideoPreprocessingError("YuNet requiere cuadros BGR originales uint8")
+                if original_size != source_size:
+                    raise VideoPreprocessingError("Las dimensiones originales cambian entre cuadros seleccionados")
                 if on_sample is not None:
-                    if (
-                        frame.ndim != 3
-                        or frame.shape[2] != 3
-                        or frame.dtype != np.uint8
-                    ):
-                        raise VideoPreprocessingError(
-                            "El detector requiere cuadros BGR originales uint8"
-                        )
-                    if original_size != source_size:
-                        raise VideoPreprocessingError(
-                            "Las dimensiones originales cambian entre cuadros seleccionados"
-                        )
                     on_sample(frame.copy(), len(frame_bytes))
+                model.setInputSize([frame.shape[1], frame.shape[0]])
+                detections = model.infer(frame)
 
-                self._model_recognition(frame, model, decoded_index)
-
-                gray = self._to_grayscale(frame)
                 if target_size is None:
-                    target_size = self._scaled_size(gray.shape[1], gray.shape[0])
+                    target_size = self._scaled_size(frame.shape[1], frame.shape[0])
+                regions.extend(self._face_regions(
+                    detections, len(frame_bytes), original_size, target_size
+                ))
+                gray = self._to_grayscale(frame)
                 if (gray.shape[1], gray.shape[0]) != target_size:
                     gray = cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
                 gray = np.ascontiguousarray(gray, dtype=np.uint8)
@@ -251,7 +263,9 @@ class VideoPreprocessor:
         expected_size = metadata.frame_count * metadata.height * metadata.width
         if len(payload) != expected_size:
             raise VideoPreprocessingError("El payload numérico tiene un tamaño inconsistente")
-        return PreprocessedVideo(payload=payload, metadata=metadata, source_size=source_size)
+        return PreprocessedVideo(
+            payload=payload, metadata=metadata, source_size=source_size, regions=tuple(regions)
+        )
 
     @staticmethod
     def _to_grayscale(frame: np.ndarray) -> np.ndarray:

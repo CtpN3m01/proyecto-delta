@@ -1,4 +1,4 @@
-"""CLI confiable de identidad y anonimización de placas con MP-SPDZ."""
+"""CLI confiable de identidad y anonimización de rostros/placas con MP-SPDZ."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ from typing import Sequence
 
 import cv2 as cv
 
-from client.preprocessing.yunet import YuNet
+from client.preprocessing.yunet import DEFAULT_YUNET_MODEL, YuNet, YuNetInitializationError
 from client.detection import DEFAULT_PLATE_CONFIDENCE_THRESHOLD, LPDYuNet, PlateDetectionError
 
 from client.networking import (
@@ -20,13 +20,14 @@ from client.networking import (
     VideoRegistration,
 )
 from client.preprocessing import (
+    FACE_CONFIDENCE_THRESHOLD,
     VideoPreprocessingError,
     VideoPreprocessor,
     VideoReconstructionError,
     VideoReconstructor,
 )
 from client.anonymization import AnonymizationPlan, prepare_anonymization
-from client.regions import DetectedRegion, DetectorExecutionError, FrameDetections
+from client.regions import DetectedRegion, DetectorExecutionError, FrameDetections, RegionType
 from mpc import MpcExternalClient, MpcExternalIOError
 from mpc.video_profile import DEFAULT_MPC_FPS, MAX_CONFIGURED_FPS
 
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("video", type=Path, help="Ruta local al archivo .mp4")
     upload.add_argument(
         "--processing-mode", choices=("identity", "anonymize"), default="identity",
-        help="identity conserva el MVP; anonymize usa regiones o --detect-plates.",
+        help="identity conserva el MVP; anonymize aplica cajas negras MPC a regiones.",
     )
     upload.add_argument(
         "--regions-json", type=Path,
@@ -68,6 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument(
         "--detect-plates", action="store_true",
         help="Detecta placas en los cuadros originales seleccionados; requiere anonymize.",
+    )
+    upload.add_argument(
+        "--detect-faces", action="store_true",
+        help="Detecta rostros con YuNet y los oculta con cajas negras en MPC; requiere anonymize.",
     )
     upload.add_argument(
         "--plate-confidence-threshold", type=float, default=DEFAULT_PLATE_CONFIDENCE_THRESHOLD,
@@ -88,7 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
             f"máximo: {MAX_CONFIGURED_FPS}. No aumenta los FPS del original."
         ),
     )
-    upload.add_argument("--conf-threshold", "--conf_threshold", type=float, default=0.9)
+    upload.add_argument(
+        "--conf-threshold", "--conf_threshold", type=float,
+        default=FACE_CONFIDENCE_THRESHOLD,
+        help=f"Confianza mínima de YuNet (predeterminado: {FACE_CONFIDENCE_THRESHOLD:g}).",
+    )
     upload.add_argument("--nms-threshold", "--nms_threshold", type=float, default=0.3)
     upload.add_argument("--top-k", "--top_k", type=int, default=5000)
     upload.add_argument(
@@ -167,17 +176,23 @@ def upload_video(
     anonymization_plan: AnonymizationPlan | None = None,
     regions_json: Path | None = None,
     detect_plates: bool = False,
+    detect_faces: bool = False,
     plate_confidence_threshold: float = DEFAULT_PLATE_CONFIDENCE_THRESHOLD,
 ) -> int:
     path = _validated_video_path(video_path)
     if processing_mode not in ("identity", "anonymize"):
         raise ClientInputError("processing_mode debe ser identity o anonymize")
-    if processing_mode == "identity" and (anonymization_plan is not None or regions_json is not None or detect_plates):
+    if processing_mode == "identity" and (
+        anonymization_plan is not None or regions_json is not None or detect_plates or detect_faces
+    ):
         raise ClientInputError("Las regiones requieren seleccionar explícitamente anonymize")
     if processing_mode == "anonymize" and sum((
-        anonymization_plan is not None, regions_json is not None, bool(detect_plates),
+        anonymization_plan is not None, regions_json is not None,
+        bool(detect_plates), bool(detect_faces),
     )) != 1:
-        raise ClientInputError("Anonimización requiere exactamente un plan, JSON o --detect-plates")
+        raise ClientInputError(
+            "Anonimización requiere exactamente un plan, JSON, --detect-faces o --detect-plates"
+        )
     print("Proyecto Delta - MPC MVP")
     print(f"\nVideo: {path.name}")
 
@@ -207,6 +222,29 @@ def upload_video(
         print("[AVISO] Solo se ocultan las regiones detectadas; el modelo puede omitir placas visibles.")
     else:
         processed = preprocessor.process(path, model)
+        if detect_faces:
+            target_size = (processed.metadata.width, processed.metadata.height)
+            detections_by_frame: list[list[DetectedRegion]] = [
+                [] for _ in range(processed.metadata.frame_count)
+            ]
+            for region in processed.regions:
+                if not 0 <= region.frame_id < processed.metadata.frame_count:
+                    raise ClientInputError(
+                        f"YuNet devolvió frame_id fuera del payload: {region.frame_id}"
+                    )
+                detections_by_frame[region.frame_id].append(DetectedRegion(
+                    RegionType.FACE, region.x, region.y, region.width, region.height,
+                ))
+            face_results = tuple(
+                FrameDetections.success(index, detections)
+                for index, detections in enumerate(detections_by_frame)
+            )
+            anonymization_plan = prepare_anonymization(
+                face_results, source_size=target_size, target_size=target_size,
+                frame_count=processed.metadata.frame_count,
+            )
+            print(f"[OK] YuNet: {len(anonymization_plan.regions)} regiones faciales preparadas")
+            print("[AVISO] Solo se ocultan los rostros detectados; YuNet puede omitir rostros visibles.")
     metadata = processed.metadata.as_dict()
     if processing_mode == "anonymize":
         if regions_json is not None:
@@ -219,8 +257,12 @@ def upload_video(
             processed.metadata.width, processed.metadata.height, processed.metadata.frame_count
         ) or len(processed.payload) != anonymization_plan.payload_size:
             raise ClientInputError("El plan no coincide con los fotogramas MPC realmente procesados")
-        print("[MODO] ANONIMIZACIÓN MPC; placas detectadas" if detect_plates else
-              "[MODO] ANONIMIZACIÓN MPC; regiones proporcionadas explícitamente")
+        mode_detail = (
+            "rostros detectados" if detect_faces else
+            "placas detectadas" if detect_plates else
+            "regiones proporcionadas explícitamente"
+        )
+        print(f"[MODO] ANONIMIZACIÓN MPC; {mode_detail}")
     else:
         print("[MODO] IDENTIDAD; no anonimiza")
     print("[OK] Video validado y preprocesado localmente")
@@ -344,8 +386,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             processing_mode=args.processing_mode,
             regions_json=args.regions_json,
             detect_plates=args.detect_plates,
+            detect_faces=args.detect_faces,
             plate_confidence_threshold=args.plate_confidence_threshold,
-            model=YuNet(modelPath='./src/client/preprocessing/face_detection_yunet_2023mar.onnx',
+            model=YuNet(modelPath=DEFAULT_YUNET_MODEL,
                   inputSize=[320, 320],
                   confThreshold=args.conf_threshold,
                   nmsThreshold=args.nms_threshold,
@@ -364,6 +407,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         MpcResultMismatchError,
         DetectorExecutionError,
         PlateDetectionError,
+        YuNetInitializationError,
         ValueError,
     ) as exc:
         print(f"Error: {exc}", file=sys.stderr)

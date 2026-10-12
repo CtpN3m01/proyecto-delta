@@ -203,10 +203,17 @@ parties no tienen ese volumen.
 
 ### Anonimización genérica T025
 
-`upload` conserva identidad por defecto y lo indica en consola. Para seleccionar
-anonimización se requieren regiones explícitas; no se integran todavía los
-detectores T021/T022/T023. La API Python recibe un `AnonymizationPlan` preparado
-con T024; para diagnóstico la CLI admite un JSON de resultados por cuadro:
+`upload` conserva identidad por defecto y lo indica en consola. Para detectar
+rostros con YuNet y ocultarlos mediante cajas negras dentro de MPC:
+
+```bash
+python -m client upload /ruta/video.mp4 --processing-mode anonymize --detect-faces
+```
+
+También se puede seleccionar `--detect-plates` o proporcionar regiones con
+`--regions-json`; estas opciones son excluyentes. El blur no está implementado:
+el circuito existente reemplaza con cero (negro) cada píxel dentro de las cajas.
+La CLI admite además JSON de diagnóstico con resultados explícitos por cuadro:
 
 ```bash
 python -m client upload /ruta/video.mp4 --processing-mode anonymize --regions-json /ruta/regiones.json

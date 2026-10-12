@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from client.preprocessing import (
+    FaceRegion,
     VideoPreprocessingError,
     VideoPreprocessor,
     VideoReconstructor,
@@ -392,6 +393,61 @@ def test_yunet_uses_original_bgr_before_grayscale_and_resize_in_temporal_order(
     assert set(result.metadata.as_dict()) == {
         "frame_count", "height", "width", "channels", "fps", "dtype", "version"
     }
+    assert result.regions == ()
+
+
+def test_face_regions_are_scaled_to_processed_frames_and_no_debug_images_written(
+    tmp_path: Path,
+) -> None:
+    source = _make_video(
+        tmp_path / "faces.mp4", width=640, height=480, fps=20, frames=6, color=True
+    )
+
+    class DetectionYuNet(FakeYuNet):
+        def infer(self, image: np.ndarray) -> np.ndarray:
+            self.frames.append(image.copy())
+            return np.array([[20.5, 20.5, 39.0, 39.0, *([0.0] * 10), 0.91]], dtype=np.float32)
+
+    result = VideoPreprocessor(max_width=480, target_fps=5).process(
+        source, DetectionYuNet()
+    )
+
+    assert result.metadata.frame_count == 2
+    assert result.regions == (
+        FaceRegion(0, 15, 15, 30, 30, pytest.approx(0.91)),
+        FaceRegion(1, 15, 15, 30, 30, pytest.approx(0.91)),
+    )
+    assert [region.frame_id for region in result.regions] == [0, 1]
+    assert len(result.payload) == result.metadata.frame_count * result.metadata.width * result.metadata.height
+    assert set(result.metadata.as_dict()) == {
+        "frame_count", "height", "width", "channels", "fps", "dtype", "version"
+    }
+    assert not (Path("results").exists())
+
+
+def test_face_region_validates_required_geometry() -> None:
+    with pytest.raises(ValueError):
+        FaceRegion(0, -1, 0, 1, 1, 0.9)
+    with pytest.raises(ValueError):
+        FaceRegion(0, 0, 0, 0, 1, 0.9)
+
+
+def test_only_face_detections_above_point_six_become_mask_regions() -> None:
+    detections = np.array([
+        [0, 0, 2, 2, *([0.0] * 10), 0.59],
+        [2, 0, 2, 2, *([0.0] * 10), 0.60],
+        [4, 0, 2, 2, *([0.0] * 10), 0.61],
+    ], dtype=np.float32)
+    regions = VideoPreprocessor._face_regions(detections, 0, (8, 4), (8, 4))
+    assert [(region.x, region.confidence) for region in regions] == [(4, pytest.approx(0.61))]
+
+
+def test_empty_face_detections_keep_every_sampled_pixel_frame(tmp_path: Path) -> None:
+    source = _make_video(tmp_path / "empty.mp4", width=32, height=24, fps=2, frames=2)
+    result = VideoPreprocessor().process(source, FakeYuNet())
+    assert result.metadata.frame_count == 2
+    assert result.regions == ()
+    assert len(result.payload) == 2 * 32 * 24
 
 
 def test_scales_bounding_boxes_with_actual_dimensions_without_clipping() -> None:

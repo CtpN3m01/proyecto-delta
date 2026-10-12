@@ -18,7 +18,7 @@ from client import cli
 from client.anonymization import prepare_anonymization
 from client.detection import PlateDetectionError
 from client.networking import PartyEndpoint, VideoRegistration
-from client.preprocessing import PreprocessedVideo, VideoMetadata
+from client.preprocessing import FaceRegion, PreprocessedVideo, VideoMetadata
 from client.regions import (
     DetectedRegion,
     DetectorExecutionError,
@@ -436,6 +436,28 @@ def test_identity_remains_unchanged_and_does_not_load_plate_detector(flow, monke
     assert flow.mpc.plans == []
     assert flow.mpc.identity_calls == [flow.preprocessor.processed.payload]
     assert flow.reconstructor.payloads == [flow.preprocessor.processed.payload]
+
+
+def test_detect_faces_prepares_face_mask_and_sends_it_to_mpc(flow, monkeypatch):
+    _patch_main(flow, monkeypatch)
+    flow.preprocessor.processed = PreprocessedVideo(
+        flow.preprocessor.processed.payload,
+        flow.preprocessor.processed.metadata,
+        source_size=(8, 4),
+        regions=(FaceRegion(1, 1, 0, 2, 1, 0.99),),
+    )
+
+    assert cli.main([
+        "upload", str(flow.source), "--processing-mode", "anonymize", "--detect-faces"
+    ]) == 0
+    assert len(flow.mpc.plans) == 1
+    assert [(r.frame_index, r.region_type.value, r.x, r.y, r.width, r.height)
+            for r in flow.mpc.plans[0].regions] == [(1, "face", 1, 0, 2, 1)]
+    assert flow.mpc.payloads == [flow.preprocessor.processed.payload]
+    expected = bytearray(flow.preprocessor.processed.payload)
+    expected[9:11] = b"\x00\x00"
+    assert flow.reconstructor.payloads == [bytes(expected)]
+    assert flow.mpc.identity_calls == []
 
 
 def test_manual_json_remains_separate_and_does_not_load_detector(flow, monkeypatch, tmp_path):
