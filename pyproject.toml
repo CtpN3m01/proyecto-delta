@@ -23,6 +23,9 @@ delta = "client.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"client.detection" = ["models/*.onnx", "models/LICENSE", "models/README.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

@@ -11,7 +11,11 @@ from client.preprocessing import (
     VideoPreprocessor,
     VideoReconstructor,
 )
-from client.preprocessing.video_preprocessor import scale_bounding_box
+from client.preprocessing.video_preprocessor import (
+    PreprocessedVideo,
+    VideoMetadata,
+    scale_bounding_box,
+)
 
 
 class FakeYuNet:
@@ -414,3 +418,143 @@ def test_bounding_box_scaling_rejects_invalid_geometry(
 ) -> None:
     with pytest.raises(ValueError):
         scale_bounding_box(box, source_size, target_size)
+
+
+@pytest.mark.parametrize(
+    ("source_fps", "target_fps", "selected_indices"),
+    [
+        (30, 10, [0, 3, 6, 9, 12]),
+        (30, 5, [0, 6, 12]),
+        (6, 10, list(range(15))),
+    ],
+)
+def test_sample_hook_matches_yunet_originals_and_processed_frame_indices(
+    tmp_path: Path,
+    source_fps: float,
+    target_fps: float,
+    selected_indices: list[int],
+) -> None:
+    source = _make_video(
+        tmp_path / "plates.mp4", width=320, height=240,
+        fps=source_fps, frames=15, color=True,
+    )
+    capture = cv2.VideoCapture(str(source))
+    originals = []
+    while True:
+        success, frame = capture.read()
+        if not success:
+            break
+        originals.append(frame)
+    capture.release()
+    samples = []
+
+    def on_sample(frame: np.ndarray, frame_index: int) -> None:
+        assert frame.shape == (240, 320, 3)
+        assert frame.dtype == np.uint8
+        assert not np.array_equal(frame[:, :, 0], frame[:, :, 2])
+        samples.append((frame_index, frame.copy()))
+
+    model = FakeYuNet()
+    processed = VideoPreprocessor(max_width=160, target_fps=target_fps).process(
+        source, model, on_sample=on_sample,
+    )
+
+    selected = [originals[index] for index in selected_indices]
+    assert processed.source_size == (320, 240)
+    assert (processed.metadata.width, processed.metadata.height) == (160, 120)
+    assert processed.metadata.frame_count == len(selected_indices)
+    assert processed.metadata.fps == min(source_fps, target_fps)
+    assert [index for index, _ in samples] == list(range(len(selected_indices)))
+    np.testing.assert_array_equal(np.stack([frame for _, frame in samples]), np.stack(selected))
+    np.testing.assert_array_equal(np.stack(model.frames), np.stack(selected))
+    expected = np.stack([
+        cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 120),
+                   interpolation=cv2.INTER_AREA)
+        for frame in selected
+    ])
+    assert processed.payload == expected.tobytes()
+
+
+def test_sample_hook_cannot_mutate_yunet_or_mpc_pixels(tmp_path: Path) -> None:
+    source = _make_video(
+        tmp_path / "untouched.mp4", width=32, height=24,
+        fps=2, frames=2, color=True,
+    )
+    baseline_model = FakeYuNet()
+    baseline = VideoPreprocessor().process(source, baseline_model)
+    model = FakeYuNet()
+
+    def on_sample(frame: np.ndarray, frame_index: int) -> None:
+        frame[:] = 0
+
+    observed = VideoPreprocessor().process(source, model, on_sample=on_sample)
+
+    assert observed.payload == baseline.payload
+    np.testing.assert_array_equal(np.stack(model.frames), np.stack(baseline_model.frames))
+    assert observed.source_size == baseline.source_size == (32, 24)
+
+
+class _SampleCapture:
+    def __init__(self, frames: list[np.ndarray], fps: float = 10) -> None:
+        self.frames = frames
+        self.fps = fps
+        self.index = 0
+        self.released = False
+
+    def isOpened(self) -> bool:
+        return True
+
+    def get(self, prop: int) -> float:
+        return self.fps if prop == cv2.CAP_PROP_FPS else len(self.frames)
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        if self.index == len(self.frames):
+            return False, None
+        frame = self.frames[self.index]
+        self.index += 1
+        return True, frame
+
+    def release(self) -> None:
+        self.released = True
+
+
+def test_sample_hook_failure_aborts_and_releases_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _SampleCapture([np.zeros((24, 32, 3), dtype=np.uint8)] * 2)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda _: capture)
+    received = []
+
+    def on_sample(frame: np.ndarray, frame_index: int) -> None:
+        received.append(frame_index)
+        if frame_index == 1:
+            raise RuntimeError("fallo técnico de placas")
+
+    with pytest.raises(RuntimeError, match="fallo técnico de placas"):
+        VideoPreprocessor().process("unused.mp4", FakeYuNet(), on_sample=on_sample)
+    assert received == [0, 1]
+    assert capture.released
+
+
+def test_sample_hook_rejects_changing_source_dimensions_before_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture = _SampleCapture([
+        np.zeros((24, 32, 3), dtype=np.uint8),
+        np.zeros((24, 34, 3), dtype=np.uint8),
+    ])
+    monkeypatch.setattr(cv2, "VideoCapture", lambda _: capture)
+    received = []
+
+    with pytest.raises(VideoPreprocessingError, match="dimensiones originales cambian"):
+        VideoPreprocessor().process(
+            "unused.mp4", FakeYuNet(),
+            on_sample=lambda frame, index: received.append(index),
+        )
+    assert received == [0]
+    assert capture.released
+
+
+def test_preprocessed_video_source_size_preserves_legacy_construction() -> None:
+    metadata = VideoMetadata(1, 2, 2, 1, 1, "uint8")
+    assert PreprocessedVideo(b"\0" * 4, metadata).source_size is None

@@ -1,6 +1,7 @@
 """Preprocesamiento local de video a pixels uint8 para el MPC."""
 
 from dataclasses import asdict, dataclass
+from collections.abc import Callable
 import math
 from pathlib import Path
 
@@ -63,6 +64,7 @@ class PreprocessedVideo:
 
     payload: bytes
     metadata: VideoMetadata
+    source_size: tuple[int, int] | None = None
 
 
 class VideoPreprocessor:
@@ -140,7 +142,19 @@ class VideoPreprocessor:
         results_dir.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(results_dir / f"result{decoded_index}.jpg"), image)
 
-    def process(self, video_path: str | Path, model: YuNet) -> PreprocessedVideo:
+    def process(
+        self,
+        video_path: str | Path,
+        model: YuNet,
+        *,
+        on_sample: Callable[[np.ndarray, int], None] | None = None,
+    ) -> PreprocessedVideo:
+        """Prepara los cuadros y permite observar exactamente la misma selección.
+
+        ``on_sample`` recibe una copia BGR original y el índice desde cero de
+        la secuencia procesada, antes de gris/resize. Un error del callback
+        aborta la preparación: nunca se interpreta como detección vacía.
+        """
         path = Path(video_path)
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
@@ -162,6 +176,7 @@ class VideoPreprocessor:
         next_sample_time = 0.0
         decoded_index = 0
         target_size: tuple[int, int] | None = None
+        source_size: tuple[int, int] | None = None
         frame_bytes: list[bytes] = []
 
         try:
@@ -178,6 +193,24 @@ class VideoPreprocessor:
                 
                 if timestamp + 1e-9 < next_sample_time:
                     continue
+
+                original_size = (frame.shape[1], frame.shape[0])
+                if source_size is None:
+                    source_size = original_size
+                if on_sample is not None:
+                    if (
+                        frame.ndim != 3
+                        or frame.shape[2] != 3
+                        or frame.dtype != np.uint8
+                    ):
+                        raise VideoPreprocessingError(
+                            "El detector requiere cuadros BGR originales uint8"
+                        )
+                    if original_size != source_size:
+                        raise VideoPreprocessingError(
+                            "Las dimensiones originales cambian entre cuadros seleccionados"
+                        )
+                    on_sample(frame.copy(), len(frame_bytes))
 
                 self._model_recognition(frame, model, decoded_index)
 
@@ -218,7 +251,7 @@ class VideoPreprocessor:
         expected_size = metadata.frame_count * metadata.height * metadata.width
         if len(payload) != expected_size:
             raise VideoPreprocessingError("El payload numérico tiene un tamaño inconsistente")
-        return PreprocessedVideo(payload=payload, metadata=metadata)
+        return PreprocessedVideo(payload=payload, metadata=metadata, source_size=source_size)
 
     @staticmethod
     def _to_grayscale(frame: np.ndarray) -> np.ndarray:

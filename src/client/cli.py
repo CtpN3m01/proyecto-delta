@@ -1,4 +1,4 @@
-"""CLI confiable para el MVP de video identidad con MP-SPDZ."""
+"""CLI confiable de identidad y anonimización de placas con MP-SPDZ."""
 
 import argparse
 import json
@@ -10,6 +10,7 @@ from typing import Sequence
 import cv2 as cv
 
 from client.preprocessing.yunet import YuNet
+from client.detection import DEFAULT_PLATE_CONFIDENCE_THRESHOLD, LPDYuNet, PlateDetectionError
 
 from client.networking import (
     CoordinatorClient,
@@ -48,7 +49,7 @@ class MpcResultMismatchError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m client",
-        description="Proyecto Delta - MVP MPC de video identidad.",
+        description="Proyecto Delta - MPC de video identidad y anonimización.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     upload = commands.add_parser(
@@ -58,11 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("video", type=Path, help="Ruta local al archivo .mp4")
     upload.add_argument(
         "--processing-mode", choices=("identity", "anonymize"), default="identity",
-        help="Selección explícita: identity conserva el MVP; anonymize requiere regiones.",
+        help="identity conserva el MVP; anonymize usa regiones o --detect-plates.",
     )
     upload.add_argument(
         "--regions-json", type=Path,
         help="Regiones de prueba/manuales en coordenadas MPC; no integra detectores.",
+    )
+    upload.add_argument(
+        "--detect-plates", action="store_true",
+        help="Detecta placas en los cuadros originales seleccionados; requiere anonymize.",
+    )
+    upload.add_argument(
+        "--plate-confidence-threshold", type=float, default=DEFAULT_PLATE_CONFIDENCE_THRESHOLD,
+        help="Umbral LPD-YuNet para placas (predeterminado: 0.6); no cambia YuNet.",
     )
     upload.add_argument(
         "--mpc-max-width", type=int, default=None,
@@ -157,18 +166,47 @@ def upload_video(
     processing_mode: str = "identity",
     anonymization_plan: AnonymizationPlan | None = None,
     regions_json: Path | None = None,
+    detect_plates: bool = False,
+    plate_confidence_threshold: float = DEFAULT_PLATE_CONFIDENCE_THRESHOLD,
 ) -> int:
     path = _validated_video_path(video_path)
     if processing_mode not in ("identity", "anonymize"):
         raise ClientInputError("processing_mode debe ser identity o anonymize")
-    if processing_mode == "identity" and (anonymization_plan is not None or regions_json is not None):
+    if processing_mode == "identity" and (anonymization_plan is not None or regions_json is not None or detect_plates):
         raise ClientInputError("Las regiones requieren seleccionar explícitamente anonymize")
-    if processing_mode == "anonymize" and (anonymization_plan is None) == (regions_json is None):
-        raise ClientInputError("Anonimización requiere un plan o JSON, no ambos ni ninguno")
+    if processing_mode == "anonymize" and sum((
+        anonymization_plan is not None, regions_json is not None, bool(detect_plates),
+    )) != 1:
+        raise ClientInputError("Anonimización requiere exactamente un plan, JSON o --detect-plates")
     print("Proyecto Delta - MPC MVP")
     print(f"\nVideo: {path.name}")
 
-    processed = preprocessor.process(path, model)
+    if detect_plates:
+        detector = LPDYuNet(confidence_threshold=plate_confidence_threshold)
+        frame_detections: list[FrameDetections] = []
+
+        def detect_sample(original_bgr, frame_index: int) -> None:
+            frame = detector.detect_frame(original_bgr, frame_index)
+            if not isinstance(frame, FrameDetections) or frame.frame_index != frame_index:
+                raise ClientInputError("El detector devolvió un índice de fotograma incompatible")
+            if not frame.succeeded:
+                raise DetectorExecutionError(
+                    f"Detector de placas fallido en frame_index={frame_index}: {frame.error}"
+                )
+            frame_detections.append(frame)
+
+        processed = preprocessor.process(path, model, on_sample=detect_sample)
+        if processed.source_size is None:
+            raise ClientInputError("El preprocesador no informó las dimensiones originales")
+        anonymization_plan = prepare_anonymization(
+            frame_detections, source_size=processed.source_size,
+            target_size=(processed.metadata.width, processed.metadata.height),
+            frame_count=processed.metadata.frame_count,
+        )
+        print(f"[OK] Placas: {len(anonymization_plan.regions)} regiones preparadas; umbral {plate_confidence_threshold:g}")
+        print("[AVISO] Solo se ocultan las regiones detectadas; el modelo puede omitir placas visibles.")
+    else:
+        processed = preprocessor.process(path, model)
     metadata = processed.metadata.as_dict()
     if processing_mode == "anonymize":
         if regions_json is not None:
@@ -181,7 +219,8 @@ def upload_video(
             processed.metadata.width, processed.metadata.height, processed.metadata.frame_count
         ) or len(processed.payload) != anonymization_plan.payload_size:
             raise ClientInputError("El plan no coincide con los fotogramas MPC realmente procesados")
-        print("[MODO] ANONIMIZACIÓN MPC; regiones proporcionadas explícitamente")
+        print("[MODO] ANONIMIZACIÓN MPC; placas detectadas" if detect_plates else
+              "[MODO] ANONIMIZACIÓN MPC; regiones proporcionadas explícitamente")
     else:
         print("[MODO] IDENTIDAD; no anonimiza")
     print("[OK] Video validado y preprocesado localmente")
@@ -304,6 +343,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root=output_root,
             processing_mode=args.processing_mode,
             regions_json=args.regions_json,
+            detect_plates=args.detect_plates,
+            plate_confidence_threshold=args.plate_confidence_threshold,
             model=YuNet(modelPath='./src/client/preprocessing/face_detection_yunet_2023mar.onnx',
                   inputSize=[320, 320],
                   confThreshold=args.conf_threshold,
@@ -322,6 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         MpcExternalIOError,
         MpcResultMismatchError,
         DetectorExecutionError,
+        PlateDetectionError,
         ValueError,
     ) as exc:
         print(f"Error: {exc}", file=sys.stderr)
