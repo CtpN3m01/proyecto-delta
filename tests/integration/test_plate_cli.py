@@ -4,7 +4,7 @@ The rectangle oracle below belongs only to tests. Production must send the
 unchanged private payload to MP-SPDZ and reconstruct only its validated output.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 from pathlib import Path
@@ -13,12 +13,15 @@ from uuid import uuid4
 
 import numpy as np
 import pytest
+import cv2
 
 from client import cli
 from client.anonymization import prepare_anonymization
 from client.detection import PlateDetectionError
 from client.networking import PartyEndpoint, VideoRegistration
-from client.preprocessing import FaceRegion, PreprocessedVideo, VideoMetadata
+from client.preprocessing import (
+    FaceRegion, PreprocessedVideo, VideoMetadata, VideoPreprocessingError, VideoPreprocessor,
+)
 from client.regions import (
     DetectedRegion,
     DetectorExecutionError,
@@ -458,6 +461,156 @@ def test_detect_faces_prepares_face_mask_and_sends_it_to_mpc(flow, monkeypatch):
     expected[9:11] = b"\x00\x00"
     assert flow.reconstructor.payloads == [bytes(expected)]
     assert flow.mpc.identity_calls == []
+
+
+@pytest.mark.parametrize("has_faces,has_plates", [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_both_detectors_merge_regions_with_empty_frames_and_overlapping_boxes(
+    flow, has_faces, has_plates,
+):
+    faces = (
+        FaceRegion(0, 1, 0, 2, 1, 0.99),
+        FaceRegion(2, 0, 1, 1, 1, 0.98),
+    ) if has_faces else ()
+    flow.preprocessor.processed = replace(flow.preprocessor.processed, regions=faces)
+    flow.results = tuple(
+        FrameDetections.success(index, (
+            DetectedRegion(RegionType.PLATE, 2, 0, 2, 2),
+        ) if has_plates and index != 1 else ())
+        for index in range(3)
+    )
+    flow.coordinator.on_register = lambda: _assert_detection_complete(flow)
+
+    assert upload(flow, detect_faces=True) == 0
+
+    assert flow.preprocessor.calls and len(flow.preprocessor.calls) == 1
+    assert [index for _, index in flow.detector_calls] == [0, 1, 2]
+    assert flow.mpc.payloads == [flow.preprocessor.processed.payload]
+    assert flow.mpc.identity_calls == []
+    plan = flow.mpc.plans[0]
+    assert plan.detections_complete
+    expected_regions = []
+    for index in range(3):
+        if has_plates and index != 1:
+            expected_regions.append(SensitiveRegion(index, RegionType.PLATE, 1, 0, 1, 1))
+        expected_regions.extend(
+            SensitiveRegion(index, RegionType.FACE, face.x, face.y, face.width, face.height)
+            for face in faces if face.frame_id == index
+        )
+    assert plan.regions == tuple(expected_regions)
+    expected_pixels = np.frombuffer(flow.preprocessor.processed.payload, np.uint8).reshape(3, 2, 4).copy()
+    if has_plates:
+        expected_pixels[[0, 2], 0, 1] = 0
+    if has_faces:
+        expected_pixels[0, 0, 1:3] = 0
+        expected_pixels[2, 1, 0] = 0
+    assert flow.reconstructor.payloads == [expected_pixels.tobytes()]
+
+
+@pytest.mark.parametrize("failed_index", [0, 1, 2])
+def test_combined_plate_failure_never_uploads_partial_face_detections(flow, failed_index):
+    flow.preprocessor.processed = replace(
+        flow.preprocessor.processed, regions=(FaceRegion(0, 1, 0, 2, 1, 0.99),),
+    )
+    flow.results = tuple(
+        FrameDetections.failure(index, "plate inference failed") if index == failed_index
+        else FrameDetections.success(index)
+        for index in range(3)
+    )
+    with pytest.raises(DetectorExecutionError):
+        upload(flow, detect_faces=True)
+    assert_no_remote_work(flow)
+
+
+@pytest.mark.parametrize("frame_id", [3, 100])
+def test_combined_faces_with_out_of_payload_index_cannot_start_job(flow, frame_id):
+    flow.preprocessor.processed = replace(
+        flow.preprocessor.processed, regions=(FaceRegion(frame_id, 1, 0, 2, 1, 0.99),),
+    )
+    with pytest.raises(cli.ClientInputError, match="frame_id"):
+        upload(flow, detect_faces=True)
+    assert_no_remote_work(flow)
+
+
+@pytest.mark.parametrize("manual", [
+    {"regions_json": Path("manual.json")},
+    {"anonymization_plan": "manual plan"},
+])
+def test_both_detectors_remain_exclusive_with_manual_region_sources(flow, manual):
+    with pytest.raises(cli.ClientInputError):
+        upload(flow, detect_faces=True, **manual)
+    assert flow.detector_calls == []
+    assert flow.preprocessor.calls == []
+    assert_no_remote_work(flow)
+
+
+def test_main_accepts_both_detector_flags_and_reports_both(flow, monkeypatch, capsys):
+    _patch_main(flow, monkeypatch)
+    assert cli.main([
+        "upload", str(flow.source), "--processing-mode", "anonymize",
+        "--detect-faces", "--detect-plates",
+    ]) == 0
+    assert "rostros y placas detectados" in capsys.readouterr().out
+    assert len(flow.mpc.plans) == 1
+    assert flow.mpc.identity_calls == []
+
+
+@pytest.mark.parametrize("fail_face", [False, True])
+def test_both_detectors_share_real_original_samples_before_resize_and_fail_closed(
+    flow, tmp_path, fail_face,
+):
+    source = tmp_path / "native_bgr.mp4"
+    writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 30, (32, 16))
+    assert writer.isOpened()
+    for index in range(6):
+        frame = np.empty((16, 32, 3), np.uint8)
+        frame[:] = (20 + index, 90 + index, 190 + index)
+        writer.write(frame)
+    writer.release()
+    face_inputs = []
+
+    class FaceDetector:
+        def setInputSize(self, size):
+            assert size == [32, 16]
+
+        def infer(self, original_bgr):
+            face_inputs.append(original_bgr.copy())
+            if fail_face:
+                raise ValueError("face inference failed")
+            return np.array([[8, 0, 8, 8, 0.99]])
+
+    flow.source = source
+    flow.model = FaceDetector()
+    flow.preprocessor = VideoPreprocessor(max_width=16, max_height=8, target_fps=10)
+    flow.results = lambda original, index: FrameDetections.success(index, (
+        DetectedRegion(RegionType.PLATE, 16, 8, 16, 8),
+    ))
+    if fail_face:
+        with pytest.raises(VideoPreprocessingError):
+            upload(flow, detect_faces=True)
+        assert len(flow.detector_calls) == len(face_inputs) == 1
+        assert_no_remote_work(flow)
+        return
+
+    assert upload(flow, detect_faces=True) == 0
+    assert len(face_inputs) == len(flow.detector_calls) == 2
+    for face_input, (plate_input, _) in zip(face_inputs, flow.detector_calls):
+        assert face_input.shape == plate_input.shape == (16, 32, 3)
+        assert np.array_equal(face_input, plate_input)
+        assert face_input[0, 0, 0] != face_input[0, 0, 1]
+    assert [index for _, index in flow.detector_calls] == [0, 1]
+    assert face_inputs[0].mean() < face_inputs[1].mean()
+    plan = flow.mpc.plans[0]
+    assert (plan.width, plan.height, plan.frame_count) == (16, 8, 2)
+    assert plan.regions == tuple(
+        region for index in range(2) for region in (
+            SensitiveRegion(index, RegionType.PLATE, 8, 4, 8, 4),
+            SensitiveRegion(index, RegionType.FACE, 4, 0, 4, 4),
+        )
+    )
+    assert all(flow.mpc.payloads[0])
+    plan.validate_result(flow.mpc.payloads[0], flow.reconstructor.payloads[0])
 
 
 def test_manual_json_remains_separate_and_does_not_load_detector(flow, monkeypatch, tmp_path):

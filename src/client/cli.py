@@ -68,11 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     upload.add_argument(
         "--detect-plates", action="store_true",
-        help="Detecta placas en los cuadros originales seleccionados; requiere anonymize.",
+        help="Detecta placas en los cuadros originales; combinable con --detect-faces, requiere anonymize.",
     )
     upload.add_argument(
         "--detect-faces", action="store_true",
-        help="Detecta rostros con YuNet y los oculta con cajas negras en MPC; requiere anonymize.",
+        help="Detecta rostros con YuNet; combinable con --detect-plates, requiere anonymize.",
     )
     upload.add_argument(
         "--plate-confidence-threshold", type=float, default=DEFAULT_PLATE_CONFIDENCE_THRESHOLD,
@@ -188,10 +188,10 @@ def upload_video(
         raise ClientInputError("Las regiones requieren seleccionar explícitamente anonymize")
     if processing_mode == "anonymize" and sum((
         anonymization_plan is not None, regions_json is not None,
-        bool(detect_plates), bool(detect_faces),
+        bool(detect_plates or detect_faces),
     )) != 1:
         raise ClientInputError(
-            "Anonimización requiere exactamente un plan, JSON, --detect-faces o --detect-plates"
+            "Anonimización requiere un plan, JSON o detectores (--detect-faces y/o --detect-plates), sin mezclarlos"
         )
     print("Proyecto Delta - MPC MVP")
     print(f"\nVideo: {path.name}")
@@ -222,29 +222,36 @@ def upload_video(
         print("[AVISO] Solo se ocultan las regiones detectadas; el modelo puede omitir placas visibles.")
     else:
         processed = preprocessor.process(path, model)
-        if detect_faces:
-            target_size = (processed.metadata.width, processed.metadata.height)
-            detections_by_frame: list[list[DetectedRegion]] = [
-                [] for _ in range(processed.metadata.frame_count)
-            ]
-            for region in processed.regions:
-                if not 0 <= region.frame_id < processed.metadata.frame_count:
-                    raise ClientInputError(
-                        f"YuNet devolvió frame_id fuera del payload: {region.frame_id}"
-                    )
-                detections_by_frame[region.frame_id].append(DetectedRegion(
-                    RegionType.FACE, region.x, region.y, region.width, region.height,
+    if detect_faces:
+        target_size = (processed.metadata.width, processed.metadata.height)
+        detections_by_frame: list[list[DetectedRegion]] = [
+            [] for _ in range(processed.metadata.frame_count)
+        ]
+        # Las placas del plan y FaceRegion ya usan coordenadas MPC reales.
+        # Unir aquí evita un segundo resize o volver a escalar las caras.
+        if detect_plates:
+            for region in anonymization_plan.regions:
+                detections_by_frame[region.frame_index].append(DetectedRegion(
+                    region.region_type, region.x, region.y, region.width, region.height,
                 ))
-            face_results = tuple(
-                FrameDetections.success(index, detections)
-                for index, detections in enumerate(detections_by_frame)
-            )
-            anonymization_plan = prepare_anonymization(
-                face_results, source_size=target_size, target_size=target_size,
-                frame_count=processed.metadata.frame_count,
-            )
-            print(f"[OK] YuNet: {len(anonymization_plan.regions)} regiones faciales preparadas")
-            print("[AVISO] Solo se ocultan los rostros detectados; YuNet puede omitir rostros visibles.")
+        for region in processed.regions:
+            if not 0 <= region.frame_id < processed.metadata.frame_count:
+                raise ClientInputError(
+                    f"YuNet devolvió frame_id fuera del payload: {region.frame_id}"
+                )
+            detections_by_frame[region.frame_id].append(DetectedRegion(
+                RegionType.FACE, region.x, region.y, region.width, region.height,
+            ))
+        combined_results = tuple(
+            FrameDetections.success(index, detections)
+            for index, detections in enumerate(detections_by_frame)
+        )
+        anonymization_plan = prepare_anonymization(
+            combined_results, source_size=target_size, target_size=target_size,
+            frame_count=processed.metadata.frame_count,
+        )
+        print(f"[OK] YuNet: {len(processed.regions)} regiones faciales preparadas")
+        print("[AVISO] Solo se ocultan los rostros detectados; YuNet puede omitir rostros visibles.")
     metadata = processed.metadata.as_dict()
     if processing_mode == "anonymize":
         if regions_json is not None:
@@ -258,6 +265,7 @@ def upload_video(
         ) or len(processed.payload) != anonymization_plan.payload_size:
             raise ClientInputError("El plan no coincide con los fotogramas MPC realmente procesados")
         mode_detail = (
+            "rostros y placas detectados" if detect_faces and detect_plates else
             "rostros detectados" if detect_faces else
             "placas detectadas" if detect_plates else
             "regiones proporcionadas explícitamente"

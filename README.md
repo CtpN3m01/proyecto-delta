@@ -1,10 +1,12 @@
 # Proyecto Delta — MVP MPC Sprint 1
 
-MVP funcional de infraestructura MPC para video. Un cliente confiable detecta
-rostros localmente con YuNet, anota las detecciones y reduce un MP4 a grayscale,
-por defecto hasta 640x480 y 10 FPS, conservando la proporción y sin ampliar videos
-pequeños. Después introduce sus pixels por el `ExternalIO`
-oficial de MP-SPDZ y recibe el resultado de un programa identidad.
+MVP funcional de infraestructura MPC para video. Un cliente confiable puede
+detectar rostros con YuNet y placas con LPD-YuNet, juntos o por separado, sobre
+los cuadros seleccionados a color y resolución original. Después prepara los
+píxeles grayscale, por defecto hasta 640x480 y 10 FPS, conservando la proporción
+y sin ampliar videos pequeños. ExternalIO introduce los píxeles privados y
+las parties aplican máscaras públicas para ocultar las regiones detectadas.
+El modo predeterminado sigue siendo identidad; anonimizar exige selección explícita.
 El cliente reconstruye el resultado en:
 
 ```text
@@ -210,8 +212,14 @@ rostros con YuNet y ocultarlos mediante cajas negras dentro de MPC:
 python -m client upload /ruta/video.mp4 --processing-mode anonymize --detect-faces
 ```
 
-También se puede seleccionar `--detect-plates` o proporcionar regiones con
-`--regions-json`; estas opciones son excluyentes. El blur no está implementado:
+Para ocultar rostros y placas en el mismo trabajo:
+
+```powershell
+python -m client upload "..\video3.mp4" --processing-mode anonymize --detect-faces --detect-plates
+```
+
+Ambos detectores se pueden combinar. Las detecciones automáticas no se mezclan
+con `--regions-json` ni con un plan manual. El blur no está implementado:
 el circuito existente reemplaza con cero (negro) cada píxel dentro de las cajas.
 La CLI admite además JSON de diagnóstico con resultados explícitos por cuadro:
 
@@ -290,8 +298,8 @@ runtimes. Los resultados permanecen bajo `output/` en el cliente.
 ## Limitaciones del Sprint 1
 
 - la CLI conserva identidad por defecto; anonimización negra exige selección
-  explícita y regiones completas. MPC no ejecuta modelos; YuNet detecta localmente,
-  pero sus detecciones no alimentan automáticamente la anonimización todavía;
+  explícita. YuNet y LPD-YuNet detectan en el cliente y alimentan la máscara MPC;
+  pueden omitir regiones o generar falsos positivos. No se garantiza cobertura total;
 - las tres parties viven en un solo host y una misma organización;
 - los certificados son de desarrollo y la imagen compartida puede ver el mismo
   directorio de certificados;

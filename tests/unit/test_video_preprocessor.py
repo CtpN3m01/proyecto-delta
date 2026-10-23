@@ -413,10 +413,9 @@ def test_face_regions_are_scaled_to_processed_frames_and_no_debug_images_written
     )
 
     assert result.metadata.frame_count == 2
-    assert result.regions == (
-        FaceRegion(0, 15, 15, 30, 30, pytest.approx(0.91)),
-        FaceRegion(1, 15, 15, 30, 30, pytest.approx(0.91)),
-    )
+    assert [(region.frame_id, region.x, region.y, region.width, region.height)
+            for region in result.regions] == [(0, 15, 15, 30, 30), (1, 15, 15, 30, 30)]
+    assert [region.confidence for region in result.regions] == pytest.approx([0.91, 0.91])
     assert [region.frame_id for region in result.regions] == [0, 1]
     assert len(result.payload) == result.metadata.frame_count * result.metadata.width * result.metadata.height
     assert set(result.metadata.as_dict()) == {
@@ -440,6 +439,21 @@ def test_only_face_detections_above_point_six_become_mask_regions() -> None:
     ], dtype=np.float32)
     regions = VideoPreprocessor._face_regions(detections, 0, (8, 4), (8, 4))
     assert [(region.x, region.confidence) for region in regions] == [(4, pytest.approx(0.61))]
+
+
+def test_face_threshold_distinguishes_adjacent_fp32_scores() -> None:
+    threshold = np.float32(0.6)
+    scores = (
+        np.nextafter(threshold, np.float32(0)),
+        threshold,
+        np.nextafter(threshold, np.float32(1)),
+    )
+    detections = np.array([
+        [2 * index, 0, 2, 2, *([0.0] * 10), score]
+        for index, score in enumerate(scores)
+    ], dtype=np.float32)
+    regions = VideoPreprocessor._face_regions(detections, 0, (8, 4), (8, 4))
+    assert [(region.x, region.confidence) for region in regions] == [(4, float(scores[2]))]
 
 
 def test_empty_face_detections_keep_every_sampled_pixel_frame(tmp_path: Path) -> None:

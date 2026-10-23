@@ -138,6 +138,9 @@ class VideoPreprocessor:
         target_width, target_height = target_size
         scale_x = target_width / source_width
         scale_y = target_height / source_height
+        # OpenCV devuelve puntuaciones FP32: comparar en esa misma precisión
+        # evita aceptar 0.60 como 0.6000000238 tras convertirlo a float de Python.
+        confidence_threshold = float(np.float32(FACE_CONFIDENCE_THRESHOLD))
         regions = []
         for detection in results:
             if len(detection) < 5:
@@ -146,7 +149,7 @@ class VideoPreprocessor:
             confidence = float(detection[-1])
             if not all(math.isfinite(value) for value in (x, y, width, height, confidence)) or width <= 0 or height <= 0:
                 raise VideoPreprocessingError("YuNet devolvió una caja facial inválida")
-            if confidence <= FACE_CONFIDENCE_THRESHOLD:
+            if confidence <= confidence_threshold:
                 continue
             # Floor el borde superior/izquierdo y ceil el inferior/derecho
             # para conservar la cobertura tras el resize.
@@ -207,7 +210,7 @@ class VideoPreprocessor:
                     raise VideoPreprocessingError(
                         f"El video excede la duración máxima de {self._max_duration:g} segundos"
                     )
-                
+
                 if timestamp + 1e-9 < next_sample_time:
                     continue
 
