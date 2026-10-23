@@ -84,6 +84,107 @@ def test_invalid_metadata_and_transition_are_rejected(client: TestClient) -> Non
     ).status_code == 422
 
 
+@pytest.mark.parametrize("max_width", [320, 480, 640])
+def test_prepare_accepts_configured_resolution(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, max_width: int
+) -> None:
+    monkeypatch.setenv("MPC_MAX_WIDTH", str(max_width))
+    monkeypatch.delenv("MPC_MAX_HEIGHT", raising=False)
+    metadata = _metadata()
+    metadata.update(width=max_width, height=max_width * 3 // 4)
+    video_id = _register(client)["id"]
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/prepare", json={"metadata": metadata}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == metadata
+
+
+@pytest.mark.parametrize("dimension", ["width", "height"])
+def test_prepare_rejects_resolution_above_configured_limit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, dimension: str
+) -> None:
+    monkeypatch.setenv("MPC_MAX_WIDTH", "480")
+    monkeypatch.setenv("MPC_MAX_HEIGHT", "240")
+    metadata = _metadata()
+    metadata.update(width=480, height=240)
+    metadata[dimension] += 1
+    video_id = _register(client)["id"]
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/prepare", json={"metadata": metadata}
+    )
+
+    assert response.status_code == 422
+
+
+def test_prepare_accepts_explicit_height_limit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MPC_MAX_WIDTH", "640")
+    monkeypatch.setenv("MPC_MAX_HEIGHT", "240")
+    metadata = _metadata()
+    metadata.update(width=640, height=240)
+    video_id = _register(client)["id"]
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/prepare", json={"metadata": metadata}
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("fps, frame_count", [(5, 100), (10, 200), (5, 200)])
+def test_prepare_accepts_temporal_limits(
+    client: TestClient, fps: int, frame_count: int
+) -> None:
+    metadata = _metadata()
+    metadata.update(fps=fps, frame_count=frame_count)
+    video_id = _register(client)["id"]
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/prepare", json={"metadata": metadata}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == metadata
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("width", 0),
+        ("height", 0),
+        ("fps", 0),
+        ("fps", 10.01),
+        ("frame_count", 0),
+        ("frame_count", 201),
+        ("dtype", "uint16"),
+        ("channels", 3),
+        ("version", 3),
+    ],
+)
+def test_configured_resolution_preserves_metadata_contract(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    monkeypatch.setenv("MPC_MAX_WIDTH", "640")
+    monkeypatch.setenv("MPC_MAX_HEIGHT", "480")
+    metadata = _metadata()
+    metadata[field] = value
+    video_id = _register(client)["id"]
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/prepare", json={"metadata": metadata}
+    )
+
+    assert response.status_code == 422
+
+
 def test_fail_releases_slot_only_after_cleanup(client: TestClient) -> None:
     video_id = _register(client)["id"]
     failed = client.post(
