@@ -66,7 +66,7 @@ async function chooseSampleVideo(page: Page) {
     await input.setInputFiles({ name: sampleVideoName, mimeType: 'video/mp4', buffer: Buffer.from(videoBytes) });
   }
   await expect(page.getByLabel('Vista previa del video original', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Simular recorrido', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeEnabled();
 }
 
 test('redirige las rutas privadas al inicio de sesión', async ({ page }) => {
@@ -192,47 +192,50 @@ test('rechaza archivos de otro tipo y MP4 corruptos', async ({ page }) => {
   await input.setInputFiles({ name: 'corrupto.mp4', mimeType: 'video/mp4', buffer: Buffer.from('MP4 no válido') });
   await expect(page.getByRole('alert')).toHaveText(/No pudimos abrir este MP4/);
   await expect(page.getByLabel('Vista previa del video original', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Simular recorrido', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeDisabled();
 });
 
-test('muestra el video original, simula cuatro etapas y no envía ni descarga archivos', async ({ page }) => {
+test('envía el video al cliente local y muestra un mensaje al completar', async ({ page }) => {
   await logIn(page);
   const requests: string[] = [];
-  const downloads: string[] = [];
+  let uploadedName = '';
+  await page.route('http://127.0.0.1:8001/api/v1/jobs', async (route) => {
+    uploadedName = route.request().postDataBuffer()?.toString().includes(sampleVideoName) ? sampleVideoName : 'uploaded';
+    await route.fulfill({ status: 202, headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'PROCESSING' }) });
+  });
+  await page.route('http://127.0.0.1:8001/api/v1/jobs/local-job', async (route) => {
+    await route.fulfill({ headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'COMPLETED', stage: 4, result_url: '/api/v1/jobs/local-job/result' }) });
+  });
   page.on('request', (request) => {
     if (['fetch', 'xhr'].includes(request.resourceType()) || !['GET', 'HEAD'].includes(request.method())) {
       requests.push(request.url());
     }
   });
-  page.on('download', (download) => downloads.push(download.suggestedFilename()));
   await chooseSampleVideo(page);
 
   const preview = page.getByLabel('Vista previa del video original', { exact: true });
   await expect(preview).toHaveAttribute('src', /^blob:/);
   await expect(page.getByText(sampleVideoName, { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Simular recorrido', exact: true }).click();
+  await page.getByRole('button', { name: 'Anonimizar video', exact: true }).click();
   const stages = page.getByRole('list', { name: 'Etapas del recorrido', exact: true });
   await expect(stages.getByRole('listitem')).toHaveCount(4);
-  await expect(page.getByRole('button', { name: 'Cancelar simulación', exact: true })).toBeVisible();
-  await expect(page.getByText('Recorrido de demostración completado', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('Video anonimizado correctamente', { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(stages.locator('[data-state="complete"]')).toHaveCount(4);
   await expect(preview).toHaveAttribute('src', /^blob:/);
-  await expect(page.getByRole('link', { name: /descargar/i })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /descargar/i })).toHaveCount(0);
-  expect(requests).toEqual([]);
-  expect(downloads).toEqual([]);
+  await expect(page.getByRole('button', { name: 'Descargar video anonimizado', exact: true })).toHaveCount(0);
+  expect(uploadedName).toBe(sampleVideoName);
+  expect(requests.some((url) => url === 'http://127.0.0.1:8001/api/v1/jobs')).toBe(true);
   await page.getByRole('button', { name: 'Quitar video', exact: true }).click();
   await expect(preview).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Simular recorrido', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeDisabled();
 });
 
-test('permite cancelar una simulación y volver a iniciarla', async ({ page }) => {
+test('muestra el error cuando el cliente local no está disponible', async ({ page }) => {
   await logIn(page);
   await chooseSampleVideo(page);
-  await page.getByRole('button', { name: 'Simular recorrido', exact: true }).click();
-  await page.getByRole('button', { name: 'Cancelar simulación', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Simular recorrido', exact: true })).toBeEnabled();
-  await expect(page.getByText('Recorrido de demostración completado', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Simular recorrido', exact: true }).click();
-  await expect(page.getByText('Recorrido de demostración completado', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await page.route('http://127.0.0.1:8001/api/v1/jobs', (route) => route.abort());
+  await page.getByRole('button', { name: 'Anonimizar video', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('No se pudo contactar al cliente local.');
+  await expect(page.getByText('No se pudo anonimizar el video', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeEnabled();
 });

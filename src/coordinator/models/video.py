@@ -106,3 +106,9 @@ class FailureRequest(BaseModel):
     """Detalle operacional de un job fallido."""
 
     detail: str = Field(min_length=1, max_length=1000)
+
+class LoginResponse(BaseModel):
+    """Info del usuario """
+    id: int
+    username: str = Field(min_length=1, max_length=1000)
+    email: str = Field(min_length=1, max_length=1000)

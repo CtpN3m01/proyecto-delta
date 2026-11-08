@@ -41,6 +41,12 @@ sharing, la comunicación party-to-party y el cálculo secreto. El Node Agent
 inicia o reinicia el runtime al preparar un job y lo detiene durante `cleanup`;
 así un nuevo job funciona incluso después del timeout inactivo de ExternalIO.
 
+La interfaz web se conecta a un puente FastAPI local (`client.local_api`) en
+`127.0.0.1:8001`. Ese puente ejecuta el mismo cliente Python que la CLI en la
+computadora del usuario; el MP4 no se envía al Coordinator. El Coordinator
+recibe metadata y coordina las parties, y el resultado reconstruido queda bajo
+`output/web/`.
+
 Decisiones del MVP:
 
 - exactamente tres parties;
@@ -122,6 +128,27 @@ El comando equivalente instalado es:
 ```bash
 delta upload /ruta/video.mp4
 ```
+
+#### Interfaz web
+
+Para ejecutar el API del cliente se debe tener el entorno virtual activado.
+
+Para usar la interfaz como lanzador del cliente Python, inicia los servicios MPC
+de arriba y, desde la raíz del repositorio, instala e inicia el puente en la
+computadora que tiene el video:
+
+```bash
+python -m pip install -e .
+uvicorn client.local_api:app --host 127.0.0.1 --port 8001
+```
+
+En otra terminal, inicia el frontend desde `frontend/` con `npm install` y
+`npm run dev`. El botón **Anonimizar video** envía el archivo al puente por
+loopback y lanza `python -m client upload ... --processing-mode anonymize
+--detect-faces --detect-plates`. El archivo fuente se borra al terminar; los
+resultados permanecen bajo `output/web/`. El puente acepta por defecto los
+orígenes locales de Vite y Preview; para otro origen configura
+`DELTA_WEB_ORIGINS` con sus URLs exactas, separadas por comas.
 
 ### Resolución para MPC
 
