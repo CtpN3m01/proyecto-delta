@@ -1,6 +1,9 @@
 """HTTP contract for starting the trusted client from the local web UI."""
 
 import time
+import asyncio
+import json
+from types import SimpleNamespace
 from pathlib import Path
 from collections.abc import Callable
 from uuid import UUID
@@ -22,6 +25,10 @@ def _client() -> TestClient:
         destination = output_root / "video-id" / "reconstructed.mp4"
         destination.parent.mkdir(parents=True)
         destination.write_bytes(b"anonymized video")
+        destination.with_name("counts.json").write_text(json.dumps({
+            "people": 1, "cars": 2, "frames_analyzed": 90,
+        }), encoding="utf-8")
+        log_path.write_text("[OK] MPC listo\n[OK] Datos enviados y recibidos\n", encoding="utf-8")
         return destination
 
     return TestClient(
@@ -56,6 +63,8 @@ def test_local_upload_runs_client_and_serves_anonymized_result(tmp_path: Path, m
         assert status.status_code == 200
         assert status.json()["status"] == "COMPLETED"
         assert status.json()["stage"] == 4
+        assert status.json()["counts"] == {"people": 1, "cars": 2, "frames_analyzed": 90}
+        assert len(status.json()["logs"]) == 2
         result = client.get(
             status.json()["result_url"],
             headers={"Origin": "http://127.0.0.1:5173"},
@@ -82,3 +91,31 @@ def test_local_client_rejects_untrusted_origin_and_non_mp4() -> None:
             files={"video": ("sample.mov", b"data", "video/quicktime")},
         )
         assert unsupported.status_code == 415
+
+
+def test_runner_enables_all_models_and_progress_reaches_reconstruction(tmp_path, monkeypatch):
+    from client import local_api
+    stages = []
+    output = tmp_path / "out"
+    result = output / "video-id" / "reconstructed.mp4"
+    result.parent.mkdir(parents=True)
+    result.write_bytes(b"result")
+    process = SimpleNamespace(stdout=None, returncode=None)
+
+    async def wait():
+        process.returncode = 0
+
+    async def launch(*args, **kwargs):
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"[PROGRESO] Detecci\xc3\xb3n: 1\n[OK] MPC listo\n[OK] Datos enviados y recibidos\n")
+        stream.feed_eof()
+        process.stdout = stream
+        assert all(flag in args for flag in ("--detect-faces", "--detect-plates", "--count-objects"))
+        assert kwargs["env"]["DELTA_OUTPUT_DIR"] == str(output)
+        return process
+
+    process.wait = wait
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    assert asyncio.run(local_api._run_client(tmp_path / "input.mp4", output, output / "client.log", stages.append)) == result
+    assert stages == [1, 2, 3, 4]
+    assert "MPC listo" in (output / "client.log").read_text()

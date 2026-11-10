@@ -9,6 +9,18 @@ afterEach(() => {
 });
 
 describe('servicio HTTP del cliente local', () => {
+  it('expone conteos y logs del trabajo y rechaza conteos inválidos', async () => {
+    vi.stubGlobal('fetch', fetchMock);
+    const counts = { people: 1, cars: 2, frames_analyzed: 90 };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'job-1', status: 'COMPLETED', stage: 4, counts, logs: ['[OK] MPC listo'],
+    })));
+    await expect(getLocalJob('job-1')).resolves.toMatchObject({ counts, logs: ['[OK] MPC listo'] });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'job-1', status: 'COMPLETED', stage: 4, counts: { ...counts, people: -1 },
+    })));
+    await expect(getLocalJob('job-1')).rejects.toThrow('conteos inválidos');
+  });
   it('envía el archivo MP4 al puente local', async () => {
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockResolvedValue(new Response(

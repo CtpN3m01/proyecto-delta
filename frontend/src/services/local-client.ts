@@ -4,6 +4,8 @@ export interface LocalJob {
   stage?: number;
   error?: string;
   result_url?: string;
+  counts?: { people: number; cars: number; frames_analyzed: number; limitation?: string };
+  logs?: string[];
 }
 
 const localClientUrl = (import.meta.env.VITE_DELTA_CLIENT_URL || 'http://127.0.0.1:8001').replace(/\/+$/, '');
@@ -54,12 +56,23 @@ function decodeJob(value: unknown, first: boolean): LocalJob {
   if ('result_url' in value && value.result_url !== undefined && typeof value.result_url !== 'string') {
     throw new Error('El cliente local devolvió la URL del resultado en un formato inválido.');
   }
+  const counts = value.counts;
+  if (counts !== undefined && (!isRecord(counts) ||
+      !['people', 'cars', 'frames_analyzed'].every(key => Number.isSafeInteger(counts[key]) && (counts[key] as number) >= 0) ||
+      (counts.limitation !== undefined && typeof counts.limitation !== 'string'))) {
+    throw new Error('El cliente devolvió conteos inválidos.');
+  }
+  if (value.logs !== undefined && (!Array.isArray(value.logs) || !value.logs.every(line => typeof line === 'string'))) {
+    throw new Error('El cliente devolvió logs inválidos.');
+  }
   return {
     id: value.id,
     status: value.status,
     ...(typeof value.stage === 'number' ? { stage: value.stage } : {}),
     ...(typeof value.error === 'string' ? { error: value.error } : {}),
     ...(typeof value.result_url === 'string' ? { result_url: value.result_url } : {}),
+    ...(counts !== undefined ? { counts: counts as LocalJob['counts'] } : {}),
+    ...(value.logs !== undefined ? { logs: value.logs as string[] } : {}),
   };
 }
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 const demoPassword = 'AdminDemo123!';
 const sampleVideo = process.env.E2E_VIDEO_PATH
   ? path.resolve(process.env.E2E_VIDEO_PATH)
-  : undefined;
+  : path.resolve(import.meta.dirname, 'fixtures/sample.mp4');
 const sampleVideoName = sampleVideo ? path.basename(sampleVideo) : 'recorrido-e2e.mp4';
 
 async function logInWithCredentials(page: Page, email: string, password: string) {
@@ -204,7 +204,7 @@ test('envía el video al cliente local y muestra un mensaje al completar', async
     await route.fulfill({ status: 202, headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'PROCESSING' }) });
   });
   await page.route('http://127.0.0.1:8001/api/v1/jobs/local-job', async (route) => {
-    await route.fulfill({ headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'COMPLETED', stage: 4, result_url: '/api/v1/jobs/local-job/result' }) });
+    await route.fulfill({ headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'COMPLETED', stage: 4, result_url: '/api/v1/jobs/local-job/result', counts: { people: 1, cars: 2, frames_analyzed: 90 }, logs: ['[OK] MPC listo'] }) });
   });
   page.on('request', (request) => {
     if (['fetch', 'xhr'].includes(request.resourceType()) || !['GET', 'HEAD'].includes(request.method())) {
@@ -222,7 +222,10 @@ test('envía el video al cliente local y muestra un mensaje al completar', async
   await expect(page.getByText('Video anonimizado correctamente', { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(stages.locator('[data-state="complete"]')).toHaveCount(4);
   await expect(preview).toHaveAttribute('src', /^blob:/);
-  await expect(page.getByRole('button', { name: 'Descargar video anonimizado', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Descargar video anonimizado', exact: true })).toBeEnabled();
+  await expect(page.getByRole('region', { name: 'Conteo del video' })).toContainText('Personas: 1 · Carros: 2');
+  await page.getByText('Registro del procesamiento', { exact: true }).click();
+  await expect(page.getByText('[OK] MPC listo', { exact: true })).toBeVisible();
   expect(uploadedName).toBe(sampleVideoName);
   expect(requests.some((url) => url === 'http://127.0.0.1:8001/api/v1/jobs')).toBe(true);
   await page.getByRole('button', { name: 'Quitar video', exact: true }).click();

@@ -11,6 +11,7 @@ results/
 
 # Los videos permanecen fuera del control de versiones.
 *.mp4
+!frontend/e2e/fixtures/sample.mp4
 
 # Shares producidos en ejecución; las carpetas se conservan con .gitkeep.
 data/parties/*/*.share

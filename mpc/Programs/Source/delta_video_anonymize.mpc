@@ -22,7 +22,9 @@ from Compiler.types import Array, MemValue, cint, regint, sint
 
 CLIENT_PORT_BASE = 14000
 CHUNK_SIZE = 4096
-MAX_PAYLOAD_SIZE = 200 * 640 * 480
+# No hay un presupuesto de duración. regint usa enteros con signo de 64 bits;
+# reservar margen al calcular ceil(longitud / CHUNK_SIZE), sin desbordamiento.
+MAX_PAYLOAD_SIZE = (1 << 63) - CHUNK_SIZE
 ANONYMIZATION_MAGIC = 0x444C5441  # DLTA; público, no un resultado secreto.
 ANONYMIZATION_VERSION = 1
 

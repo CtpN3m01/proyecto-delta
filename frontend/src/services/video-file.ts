@@ -1,5 +1,3 @@
-export const MAX_VIDEO_SECONDS = 20;
-
 export interface VideoDetails {
   name: string;
   size: number;
@@ -43,8 +41,6 @@ export function inspectVideo(file: File, signal?: AbortSignal): Promise<VideoDet
     video.onloadedmetadata = () => {
       if (!Number.isFinite(video.duration) || video.duration <= 0 || !video.videoWidth || !video.videoHeight) {
         finish(new Error('El archivo no contiene un video válido con duración y dimensiones reconocibles.'));
-      } else if (video.duration > MAX_VIDEO_SECONDS + 0.05) {
-        finish(new Error(`El perfil actual admite videos de hasta ${MAX_VIDEO_SECONDS} segundos. Selecciona uno más corto.`));
       } else finish();
     };
     video.onerror = () => finish(new Error('No pudimos abrir este MP4. Puede estar dañado o utilizar un códec no compatible con tu navegador.'));

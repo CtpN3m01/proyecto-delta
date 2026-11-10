@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:5173';
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const executablePath = process.env.PLAYWRIGHT_BROWSER_PATH;
 
 export default defineConfig({
   testDir: './e2e',
@@ -18,7 +19,8 @@ export default defineConfig({
   projects: [
     {
       name: 'edge',
-      use: { ...devices['Desktop Edge'], channel: 'msedge' },
+      use: { ...devices['Desktop Edge'], channel: executablePath ? undefined : 'msedge',
+        ...(executablePath ? { launchOptions: { executablePath } } : {}) },
     },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL

@@ -1,7 +1,7 @@
 import { ArrowRight, Check, FileVideo, Info, LoaderCircle, Network, Play, ScanFace, UploadCloud, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import { formatFileSize, inspectVideo, MAX_VIDEO_SECONDS, type VideoDetails } from '../services/video-file';
-import { getLocalJob, startLocalAnonymization } from '../services/local-client';
+import { formatFileSize, inspectVideo, type VideoDetails } from '../services/video-file';
+import { fetchLocalResult, getLocalJob, startLocalAnonymization, type LocalJob } from '../services/local-client';
 
 const steps = [
   { title: 'Preparación', detail: 'El cliente prepara los cuadros.', icon: FileVideo },
@@ -20,6 +20,8 @@ export default function DashboardPage() {
   const [error, setError] = useState('');
   const [processing, setProcessing] = useState<ProcessingState>('idle');
   const [stage, setStage] = useState(0);
+  const [job, setJob] = useState<LocalJob | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const request = useRef(0);
   const reader = useRef<AbortController | null>(null);
@@ -31,7 +33,7 @@ export default function DashboardPage() {
     reader.current?.abort();
     const controller = new AbortController();
     reader.current = controller;
-    setSelection(null); setError(''); setProcessing('idle'); setReading(true);
+    setSelection(null); setError(''); setProcessing('idle'); setJob(null); setReading(true);
     try {
       const details = await inspectVideo(file, controller.signal);
       if (current === request.current) setSelection({ file, details, url: URL.createObjectURL(file) });
@@ -44,7 +46,7 @@ export default function DashboardPage() {
 
   function removeFile() {
     request.current += 1; reader.current?.abort();
-    setSelection(null); setReading(false); setError(''); setProcessing('idle');
+    setSelection(null); setReading(false); setError(''); setProcessing('idle'); setJob(null);
   }
 
   function change(event: ChangeEvent<HTMLInputElement>) {
@@ -63,14 +65,16 @@ export default function DashboardPage() {
 
   async function startProcessing() {
     if (!selection || reading) return;
-    setStage(0); setError(''); setProcessing('running');
+    setStage(0); setError(''); setProcessing('running'); setJob(null);
     try {
       const started = await startLocalAnonymization(selection.file);
       let job = started;
+      setJob(job);
       while (job.status === 'PROCESSING') {
         setStage(job.stage ?? 0);
         await new Promise(resolve => setTimeout(resolve, 1000));
         job = await getLocalJob(started.id);
+        setJob(job);
       }
       if (job.status === 'FAILED') throw new Error(job.error || 'El procesamiento del video falló.');
       if (!job.result_url) throw new Error('El cliente terminó sin proporcionar el video anonimizado.');
@@ -80,6 +84,19 @@ export default function DashboardPage() {
       setError(reason instanceof Error ? reason.message : 'No pudimos procesar el video.');
       setProcessing('failed');
     }
+  }
+
+  async function downloadResult() {
+    if (!job?.result_url) return;
+    setDownloading(true);
+    try {
+      const url = URL.createObjectURL(await fetchLocalResult(job.result_url));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'video-anonimizado.mp4'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'No se pudo descargar el resultado.');
+    } finally { setDownloading(false); }
   }
 
   return <div className="dashboard-page">
@@ -93,7 +110,7 @@ export default function DashboardPage() {
             <h3>{reading ? 'Leyendo tu video…' : 'Arrastra tu video hasta aquí'}</h3>
             <p>{reading ? 'Comprobando sus metadatos en este navegador.' : 'O selecciónalo directamente desde tu computadora.'}</p>
             <button className="button button-primary" type="button" disabled={reading} onClick={() => fileInput.current?.click()}><UploadCloud size={17} />Seleccionar video</button>
-            <span id="upload-hint" className="upload-hint">MP4 <span>·</span> Hasta {MAX_VIDEO_SECONDS} segundos <span>·</span> Un archivo a la vez</span>
+            <span id="upload-hint" className="upload-hint">MP4 <span>·</span> Hasta 30 FPS · 1080p <span>·</span> Sin límite fijo de duración</span>
             {reading && <button className="text-button" onClick={removeFile}>Cancelar lectura</button>}
           </div>}
           {selection && <div className="selected-video">
@@ -115,6 +132,15 @@ export default function DashboardPage() {
         return <li key={step.title} data-state={complete ? 'complete' : active ? 'active' : 'pending'}><span className="simulation-step-icon">{complete ? <Check size={16} /> : active ? <LoaderCircle size={16} className="spin" /> : index + 1}</span><div><strong>{step.title}</strong><small>{complete ? 'Completada' : active ? 'En curso' : 'Pendiente'}</small></div></li>;
       })}</ol>
       {processing === 'running' && <p><Info size={15} />El archivo se envía al servicio local de Proyecto Delta; el coordinator recibe metadata y coordina las parties MPC.</p>}
+      {processing === 'complete' && job?.counts && <section aria-label="Conteo del video">
+        <h3>Conteo del video</h3>
+        <p>Personas: <strong>{job.counts.people}</strong> · Carros: <strong>{job.counts.cars}</strong></p>
+        <small>{job.counts.limitation ?? 'Conteo estimado de trayectorias; no suma detecciones de cada cuadro.'}</small>
+      </section>}
+      {processing === 'complete' && job?.result_url && <button className="button button-primary" onClick={downloadResult} disabled={downloading}>
+        {downloading ? 'Descargando…' : 'Descargar video anonimizado'}
+      </button>}
+      {!!job?.logs?.length && <details><summary>Registro del procesamiento</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{job.logs.join('\n')}</pre></details>}
     </section>}
     <section id="como-funciona" className="process-section" aria-labelledby="process-title"><div className="section-heading"><div><span className="eyebrow">PROCESAMIENTO LOCAL</span><h2 id="process-title">¿Qué sucede con tu video?</h2><p>El cliente local prepara los cuadros, los procesa con MPC y reconstruye el resultado en esta computadora.</p></div><span className="process-label"><span />CLIENTE + MPC</span></div><div className="process-grid">{steps.map((step, index) => <article className="process-step" key={step.title}><div className="process-icon"><step.icon size={23} /><span>0{index + 1}</span></div><h3>{step.title}</h3><p>{step.detail}</p></article>)}</div></section>
   </div>;

@@ -10,6 +10,7 @@ import sys
 from threading import Lock
 from types import ModuleType
 from typing import TYPE_CHECKING, Iterator
+from time import perf_counter
 
 if TYPE_CHECKING:
     from client.anonymization import AnonymizationPlan
@@ -86,6 +87,7 @@ class MpcExternalClient:
                 )
             client.send_public_inputs([len(payload), number_chunks])
             result = bytearray()
+            started = perf_counter()
             for offset in range(0, len(payload), CHUNK_SIZE):
                 chunk = list(payload[offset : offset + CHUNK_SIZE])
                 actual_length = len(chunk)
@@ -101,6 +103,9 @@ class MpcExternalClient:
                             f"MP-SPDZ devolvió un pixel fuera de uint8: {value}"
                         )
                     result.append(value)
+                if (offset // CHUNK_SIZE + 1) % 250 == 0 or offset + CHUNK_SIZE >= len(payload):
+                    print(f"[PROGRESO] ExternalIO: {offset // CHUNK_SIZE + 1}/{number_chunks} bloques; {perf_counter()-started:.1f} s", flush=True)
+            print(f"[TIEMPO] ExternalIO identidad: {perf_counter()-started:.3f} s", flush=True)
             return bytes(result)
         except MpcExternalIOError:
             raise
@@ -157,6 +162,7 @@ class MpcExternalClient:
                     raise MpcExternalIOError("La party no confirmó el programa de anonimización")
 
             result = bytearray()
+            started = perf_counter()
             for offset in range(0, len(payload), CHUNK_SIZE):
                 actual_length = min(CHUNK_SIZE, len(payload) - offset)
                 mask = list(plan.mask_chunk(offset, actual_length))
@@ -175,6 +181,9 @@ class MpcExternalClient:
                     result.append(value)
                 if any(revealed[actual_length:]):
                     raise MpcExternalIOError("MP-SPDZ devolvió padding no nulo")
+                if (offset // CHUNK_SIZE + 1) % 250 == 0 or offset + CHUNK_SIZE >= len(payload):
+                    print(f"[PROGRESO] ExternalIO: {offset // CHUNK_SIZE + 1}/{number_chunks} bloques; {perf_counter()-started:.1f} s", flush=True)
+            print(f"[TIEMPO] ExternalIO anonimización: {perf_counter()-started:.3f} s", flush=True)
             result = bytes(result)
             # Validar, no producir un resultado anonimizado localmente.
             plan.validate_result(payload, result)

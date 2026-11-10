@@ -1,5 +1,11 @@
 .git
 .venv
+.venv-test
+frontend/node_modules
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+results
 __pycache__
 *.py[cod]
 *.mp4

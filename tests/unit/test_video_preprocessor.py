@@ -71,7 +71,7 @@ def test_converts_to_raw_grayscale_and_reduces_fps(tmp_path: Path) -> None:
         tmp_path / "tiny.mp4", width=64, height=48, fps=20, frames=20
     )
 
-    result = VideoPreprocessor().process(source, FakeYuNet())
+    result = VideoPreprocessor(target_fps=10).process(source, FakeYuNet())
 
     assert result.metadata.frame_count == 10
     assert result.metadata.width == 64
@@ -90,8 +90,9 @@ def test_converts_to_raw_grayscale_and_reduces_fps(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("source_fps", "source_frames", "target_fps", "expected_fps", "selected_indices"),
     [
-        (20, 20, None, 10, list(range(0, 20, 2))),
-        (30, 30, None, 10, list(range(0, 30, 3))),
+        (20, 20, None, 20, list(range(20))),
+        (30, 30, None, 30, list(range(30))),
+        (60, 60, None, 30, list(range(0, 60, 2))),
         (20, 20, 5, 5, list(range(0, 20, 4))),
         (10, 10, None, 10, list(range(10))),
         (6, 12, None, 6, list(range(12))),
@@ -150,17 +151,19 @@ def test_downscales_but_does_not_upscale(tmp_path: Path) -> None:
     assert (small_result.metadata.width, small_result.metadata.height) == (64, 48)
 
 
-def test_default_resolution_box_is_640_by_480() -> None:
-    assert VideoPreprocessor()._scaled_size(1280, 960) == (640, 480)
+def test_default_resolution_box_is_full_hd_without_upscaling() -> None:
+    assert VideoPreprocessor()._scaled_size(3840, 2160) == (1920, 1080)
+    assert VideoPreprocessor()._scaled_size(1280, 720) == (1280, 720)
 
 
-def test_rejects_video_longer_than_twenty_seconds(tmp_path: Path) -> None:
+def test_accepts_video_longer_than_twenty_seconds_and_optional_local_cap(tmp_path: Path) -> None:
     source = _make_video(
         tmp_path / "long.mp4", width=16, height=16, fps=2, frames=42
     )
 
+    assert VideoPreprocessor().process(source, FakeYuNet()).metadata.frame_count == 42
     with pytest.raises(VideoPreprocessingError, match="duración máxima"):
-        VideoPreprocessor().process(source, FakeYuNet())
+        VideoPreprocessor(max_duration_seconds=20).process(source, FakeYuNet())
 
 
 @pytest.mark.parametrize("content", [b"", b"not-an-mp4"])
@@ -178,7 +181,7 @@ def test_rejects_invalid_mp4(tmp_path: Path, content: bytes) -> None:
         ((64, 48), 320, (64, 48), 2, 4, None, 2, 4),
         ((642, 482), 480, (478, 360), 2, 4, None, 2, 4),
         ((640, 480), 640, (640, 480), 2, 4, None, 2, 4),
-        ((64, 48), 640, (64, 48), 20, 20, None, 10, 10),
+        ((64, 48), 640, (64, 48), 20, 20, None, 20, 20),
         ((64, 48), 640, (64, 48), 20, 20, 5, 5, 5),
     ],
 )
@@ -283,9 +286,9 @@ def test_widescreen_aspect_ratio_is_preserved_without_upscaling(tmp_path: Path) 
     "options",
     [
         {"max_width": 0}, {"max_height": 0}, {"max_width": 1},
-        {"max_height": 1}, {"max_width": 641},
-        {"max_height": 481}, {"max_duration_seconds": 0},
-        {"max_duration_seconds": 21}, {"target_fps": 0}, {"target_fps": 11},
+        {"max_height": 1}, {"max_width": 1921},
+        {"max_height": 1081}, {"max_duration_seconds": 0},
+        {"max_duration_seconds": float("inf")}, {"target_fps": 0}, {"target_fps": 31},
         {"target_fps": float("nan")}, {"target_fps": float("inf")},
     ],
 )
@@ -333,7 +336,7 @@ def test_accepts_twenty_seconds_and_at_most_two_hundred_sampled_frames(
 
 
 @pytest.mark.parametrize(
-    ("target_fps", "sample_stride", "expected_frames"), [(None, 2, 10), (5, 4, 5)]
+    ("target_fps", "sample_stride", "expected_frames"), [(None, 1, 20), (5, 4, 5)]
 )
 def test_yunet_uses_original_bgr_before_grayscale_and_resize_in_temporal_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -382,7 +385,7 @@ def test_yunet_uses_original_bgr_before_grayscale_and_resize_in_temporal_order(
     result = VideoPreprocessor(max_width=480, **options).process(source, model)
 
     assert result.metadata.frame_count == expected_frames
-    assert result.metadata.fps == (10 if target_fps is None else target_fps)
+    assert result.metadata.fps == (20 if target_fps is None else target_fps)
     assert events == ["infer", "grayscale", "resize"] * expected_frames
     assert model.input_sizes == [(640, 480)] * expected_frames
     np.testing.assert_array_equal(np.stack(model.frames), np.stack(selected))
