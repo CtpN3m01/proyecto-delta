@@ -20,10 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/MP-SPDZ
 COPY MP-SPDZ/ ./
 
-# Build portable enough for the local MVP instead of baking -march=native.
+# MP-SPDZ requires AVX2/BMI2/ADX (see its CONFIG), so ARCH cannot be empty;
+# list the features explicitly instead of -march=native to stay portable.
 RUN printf '%s\n' \
         'CXX = clang++' \
-        'ARCH =' \
+        'ARCH = -msse4.1 -msse4.2 -maes -mpclmul -mavx -mavx2 -mbmi2 -madx' \
         'USE_NTL = 0' \
         'PREP_DIR = '\''-DPREP_DIR="Player-Data/"'\''' \
         'SSL_DIR = '\''-DSSL_DIR="Player-Data/"'\''' \
