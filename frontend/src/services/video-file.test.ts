@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { formatFileSize, inspectVideo, MAX_VIDEO_SECONDS, validateVideoFile } from './video-file';
+import { formatFileSize, inspectVideo, validateVideoFile } from './video-file';
 
 function mp4(name = 'muestra.mp4', type = 'video/mp4') {
   return new File(['contenido del video'], name, { type });
@@ -116,7 +116,6 @@ describe('lectura local de los metadatos', () => {
   });
 
   it.each([20, 20.05])('admite el límite de duración y la tolerancia del contenedor: %s s', async (duration) => {
-    expect(MAX_VIDEO_SECONDS).toBe(20);
     setMetadata(duration);
     const result = inspectVideo(mp4());
     video.dispatchEvent(new Event('loadedmetadata'));
@@ -124,11 +123,11 @@ describe('lectura local de los metadatos', () => {
     expectReleased();
   });
 
-  it.each([20.051, 21, 120])('rechaza una duración superior a 20,05 segundos: %s', async (duration) => {
+  it.each([20.051, 21, 120, 1200, 86400])('admite videos sin un máximo fijo de duración: %s', async (duration) => {
     setMetadata(duration);
     const result = inspectVideo(mp4());
     video.dispatchEvent(new Event('loadedmetadata'));
-    await expect(result).rejects.toThrow('hasta 20 segundos');
+    await expect(result).resolves.toMatchObject({ duration });
     expectReleased();
   });
 

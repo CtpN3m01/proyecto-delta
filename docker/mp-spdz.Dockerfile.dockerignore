@@ -1,5 +1,11 @@
 **/.git
 **/.venv
+**/.venv-test
+**/node_modules
+**/frontend/dist
+**/playwright-report
+**/test-results
+proyecto-delta/results
 **/__pycache__
 **/*.pyc
 proyecto-delta/.runtime

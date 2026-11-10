@@ -1,4 +1,16 @@
-# Recurso LPD-YuNet
+# Recursos locales de detección
+
+## YOLOX-S para conteo de personas y carros
+
+Archivo FP32: `object_detection_yolox_2022nov.onnx` (COCO, clases 0 y 2).
+Fuente oficial: https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox
+SHA-256: `c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063`.
+Licencia Apache 2.0, incluida en `LICENSE`. No se descarga durante inferencia.
+El adaptador usa el preprocesamiento RGB 0..255 y letterbox de la referencia
+oficial. El resize interno del detector no reduce los cuadros enviados a MPC.
+Solo produce conteos por seguimiento; no agrega máscaras de anonimización.
+
+## LPD-YuNet
 
 Archivo FP32: `license_plate_detection_lpd_yunet_2023mar.onnx`.
 

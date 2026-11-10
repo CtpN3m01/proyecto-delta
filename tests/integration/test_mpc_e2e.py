@@ -81,7 +81,7 @@ def test_three_real_parties_reconstruct_tiny_video(
     monkeypatch.setattr(cli, "YuNet", local_yunet)
     monkeypatch.setattr(cli.MpcExternalClient, "process_identity", record_identity)
     monkeypatch.chdir(tmp_path)
-    assert cli.main(["upload", str(source)]) == 0
+    assert cli.main(["upload", str(source), "--mpc-fps", "10"]) == 0
 
     results = list(output_root.glob("*/reconstructed.mp4"))
     assert len(results) == 1
@@ -101,7 +101,7 @@ def test_three_real_parties_reconstruct_tiny_video(
         decoded_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     capture.release()
 
-    processed = VideoPreprocessor().process(source, FakeYuNet())
+    processed = VideoPreprocessor(target_fps=10).process(source, FakeYuNet())
     assert processed.metadata.frame_count == 10
     assert processed.metadata.fps == 10
     assert len(processed.payload) == 10 * 64 * 48

@@ -3,7 +3,7 @@
 MVP funcional de infraestructura MPC para video. Un cliente confiable puede
 detectar rostros con YuNet y placas con LPD-YuNet, juntos o por separado, sobre
 los cuadros seleccionados a color y resolución original. Después prepara los
-píxeles grayscale, por defecto hasta 640x480 y 10 FPS, conservando la proporción
+píxeles grayscale, por defecto hasta 1920x1080 y 30 FPS, conservando la proporción
 y sin ampliar videos pequeños. ExternalIO introduce los píxeles privados y
 las parties aplican máscaras públicas para ocultar las regiones detectadas.
 El modo predeterminado sigue siendo identidad; anonimizar exige selección explícita.
@@ -12,6 +12,13 @@ El cliente reconstruye el resultado en:
 ```text
 output/<video_id>/reconstructed.mp4
 ```
+
+YOLOX-S cuenta trayectorias de personas y carros en el mismo cliente, sin
+convertir sus cajas en regiones a ocultar. No se suman detecciones por cuadro.
+La web lo activa automáticamente; CLI: `--count-objects`. El conteo estimado se
+guarda como `counts.json` junto al MP4. No garantiza reconocer reingresos largos.
+No hay máximo fijo de duración; el video completo todavía se prepara en RAM.
+Estos máximos no garantizan rendimiento aceptable ni capacidad ilimitada.
 
 El MP4 original y el resultado no anonimizado nunca se envían al Coordinator ni
 a una party individual.
@@ -40,6 +47,13 @@ Cada servicio `party-N` contiene un Node Agent FastAPI y un proceso real
 sharing, la comunicación party-to-party y el cálculo secreto. El Node Agent
 inicia o reinicia el runtime al preparar un job y lo detiene durante `cleanup`;
 así un nuevo job funciona incluso después del timeout inactivo de ExternalIO.
+
+La interfaz web se conecta a un puente FastAPI local (`client.local_api`) en
+`127.0.0.1:8001`. Compose levanta este puente como `client-api`: ejecuta el mismo
+cliente Python que la CLI, en la computadora donde corre Docker. El MP4 original
+se envía a ese puente, nunca al Coordinator. El Coordinator
+recibe metadata y coordina las parties, y el resultado reconstruido queda bajo
+`output/web/`.
 
 Decisiones del MVP:
 
@@ -84,6 +98,7 @@ Compose levanta:
 | Servicio | Puerto host | Responsabilidad |
 |---|---:|---|
 | `coordinator-api` | 8000 | UUID, metadata y ciclo del job |
+| `client-api` | 127.0.0.1:8001 | Recibe el MP4 y ejecuta detección, conteo y cliente MPC |
 | `party-0` | 8100 / 14000 | Node Agent / ExternalIO P0 |
 | `party-1` | 8101 / 14001 | Node Agent / ExternalIO P1 |
 | `party-2` | 8102 / 14002 | Node Agent / ExternalIO P2 |
@@ -123,11 +138,32 @@ El comando equivalente instalado es:
 delta upload /ruta/video.mp4
 ```
 
+#### Interfaz web
+
+`docker compose up --build -d --wait` inicia también `client-api` en el puerto
+8001. No hace falta otra instalación Python para utilizar la web.
+Alternativamente, para ejecutar el puente fuera de Docker (no simultáneamente):
+
+```bash
+python -m pip install -e .
+uvicorn client.local_api:app --host 127.0.0.1 --port 8001
+```
+
+En otra terminal, inicia el frontend desde `frontend/` con `npm install` y
+`npm run dev`. El botón **Anonimizar video** envía el archivo al puente por
+loopback y lanza `python -m client upload ... --processing-mode anonymize
+--detect-faces --detect-plates --count-objects`. El archivo fuente se borra al terminar;
+resultados, `counts.json` y `client.log` permanecen bajo `output/web/`.
+El dashboard muestra conteos, progreso y permite descargar el resultado.
+El puente acepta por defecto los
+orígenes locales de Vite y Preview; para otro origen configura
+`DELTA_WEB_ORIGINS` con sus URLs exactas, separadas por comas.
+
 ### Resolución para MPC
 
 `MPC_MAX_WIDTH` y `MPC_MAX_HEIGHT` configuran la caja máxima en el cliente,
-Coordinator y parties. El perfil predeterminado es 640x480; si el alto no se
-indica, se deriva como 3/4 del ancho. La imagen conserva su propia proporción
+Coordinator y parties. El perfil predeterminado es 1920x1080; para anchos menores,
+el alto implícito conserva 4:3 hasta un máximo de 1080. La imagen conserva su propia proporción
 y se alinea a dimensiones pares para MP4. YuNet sigue recibiendo los cuadros
 originales a color antes de esta reducción; los píxeles MPC siguen en gris.
 
@@ -140,9 +176,11 @@ python -m client upload /ruta/video.mp4 --mpc-max-width 320 --mpc-max-height 240
 Para cambiar el máximo admitido por los servicios, configurar ambas variables
 en `.env` y recrear Compose. Para la CLI del host se usan las mismas variables
 de entorno o los argumentos anteriores; no se carga `.env` automáticamente.
-Los perfiles admitidos están acotados a 640x480; no se cambió el protocolo MPC.
+Los perfiles admitidos están acotados a 1920x1080; no se cambió el protocolo MPC.
+Recrear las tres parties es necesario para cargar el circuito sin el presupuesto
+anterior de 200 cuadros. Solo se mantiene la cota técnica del entero de 64 bits.
 
-Se probaron cuatro cuadros a 2 FPS mediante tres parties reales: en la medición
+Referencia histórica del perfil anterior: se probaron cuatro cuadros a 2 FPS mediante tres parties reales: en la medición
 final con muestreo de memoria, MPC tardó 17,02 s a 320x240, 37,12 s a 480x360
 y 65,09 s a 640x480 en Docker local. El flujo completo tardó 18,15 / 44,21 /
 72,46 s respectivamente. ExternalIO privado intercambió 22,12 / 49,85 / 88,48 MB
@@ -150,8 +188,8 @@ de aplicación (envío + recepción; no incluye TLS/TCP ni tráfico entre partie
 
 ### FPS para MPC
 
-El cliente muestrea hasta **10 FPS** por defecto y conserva el límite de
-20 segundos: como máximo 200 cuadros. Si el original tiene menos FPS, conserva
+El cliente muestrea hasta **30 FPS** por defecto, sin un límite fijo de duración
+ni de cantidad de cuadros. Si el original tiene menos FPS, conserva
 su frecuencia; no duplica ni inventa cuadros. YuNet analiza cada cuadro
 seleccionado en su resolución original y a color, antes de gris/resize.
 
@@ -161,7 +199,7 @@ Para volver al menor costo de 5 FPS, sin cambiar la resolución:
 python -m client upload /ruta/video.mp4 --mpc-fps 5
 ```
 
-`--mpc-fps` acepta valores mayores que 0 y hasta 10. La reconstrucción utiliza
+`--mpc-fps` acepta valores mayores que 0 y hasta 30. La reconstrucción utiliza
 los FPS del muestreo para mantener la duración, no para acelerar el video.
 Pasar de 5 a 10 FPS con la misma duración y resolución implica aproximadamente
 el doble de cuadros y comunicación; el tiempo real debe medirse. No cambia el
@@ -171,13 +209,13 @@ Si Compose ya estaba levantado con el límite anterior de 5 FPS/100 cuadros,
 ejecutar `docker compose up --build -d` para actualizar también las validaciones
 del Coordinator y las parties. Cambiar solo el cliente no basta.
 
-Se compararon ambos perfiles con el mismo clip original a color de 640x480,
+Mediciones históricas, no benchmarks del perfil nuevo: se compararon ambos perfiles con el mismo clip original a color de 640x480,
 30 FPS y un segundo, mediante las tres parties reales del Compose habitual:
 
 | Muestreo | Cuadros procesados | Tiempo MPC | Flujo CLI completo | ExternalIO privado (MB) |
 |---|---:|---:|---:|---:|
 | 5 FPS (`--mpc-fps 5`) | 5 | 46,76 s | 53,53 s | 110,61 |
-| 10 FPS (predeterminado) | 10 | 95,69 s | 102,64 s | 221,21 |
+| 10 FPS (predeterminado anterior) | 10 | 95,69 s | 102,64 s | 221,21 |
 
 El tráfico medido suma bytes de aplicación enviados y recibidos; excluye TLS/TCP,
 la cabecera pública y comunicación entre parties. Ambos casos conservaron
@@ -239,7 +277,7 @@ reconstruir Compose para usar `MPC_PROGRAM=delta_video_anonymize`.
 
 La CLI:
 
-1. valida el MP4 y el límite de 20 segundos;
+1. valida el MP4, sin máximo fijo de duración;
 2. ejecuta localmente YuNet en los frames muestreados, anota rostros detectados,
    reduce resolución/FPS y convierte a grayscale `uint8`;
 3. registra metadata pública y obtiene un UUID;
@@ -305,6 +343,8 @@ runtimes. Los resultados permanecen bajo `output/` en el cliente.
   directorio de certificados;
 - no hay base de datos ni recuperación tras reiniciar el Coordinator;
 - se procesa un video a la vez;
-- límite de entrada: 20 s y 10 FPS (hasta 200 cuadros), grayscale; caja espacial
-  configurable, 640x480 por defecto, verificada únicamente en clips pequeños;
+- entrada sin máximo fijo de duración, hasta 30 FPS, grayscale; caja espacial
+  configurable hasta 1920x1080; límites prácticos de RAM, disco y comunicación;
+- el puente HTTP sigue siendo de desarrollo, sin autenticación de servidor;
+  se publica solo en loopback. No exponerlo a Internet cambiando una URL;
 - no se ha preparado todavía el despliegue ARM/Raspberry Pi.

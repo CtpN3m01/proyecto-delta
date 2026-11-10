@@ -166,6 +166,7 @@ export function createDemoAuthService(local: Storage, session: Storage): DemoAut
     if (ids.size !== value.users.length || emails.size !== value.users.length) {
       throw new Error('Los datos de usuarios de la demo están dañados: hay usuarios duplicados.');
     }
+    console.log(value.users);
     return { version: 1, users: value.users };
   }
 

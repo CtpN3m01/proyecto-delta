@@ -4,15 +4,12 @@ from dataclasses import dataclass
 import os
 
 
-# Perfil espacial verificado con tres parties en clips pequeños.
-# No es una validación de 20 segundos a esta resolución ni de Raspberry Pi.
-DEFAULT_MPC_WIDTH = 640
-MAX_CONFIGURED_WIDTH = 640
-MAX_CONFIGURED_HEIGHT = 480
-DEFAULT_MPC_FPS = 10.0
-MAX_CONFIGURED_FPS = 10
-MAX_VIDEO_DURATION_SECONDS = 20
-MAX_VIDEO_FRAMES = MAX_VIDEO_DURATION_SECONDS * MAX_CONFIGURED_FPS
+# Cotas de entrada, no una promesa de tiempo real o memoria ilimitada.
+DEFAULT_MPC_WIDTH = 1920
+MAX_CONFIGURED_WIDTH = 1920
+MAX_CONFIGURED_HEIGHT = 1080
+DEFAULT_MPC_FPS = 30.0
+MAX_CONFIGURED_FPS = 30
 
 
 @dataclass(frozen=True)
@@ -36,15 +33,15 @@ class MpcVideoProfile:
         max_width: int | None = None,
         max_height: int | None = None,
     ) -> "MpcVideoProfile":
-        """Los argumentos tienen prioridad; el alto por defecto es 3/4 del ancho.
+        """Los argumentos tienen prioridad; la caja nueva por defecto es 1080p.
 
         Este par define una caja máxima, no la proporción del video. Todos los
         servicios deben configurar los mismos máximos antes de aceptar un job.
-        Las cotas 640x480 limitan los perfiles a los evaluados en esta tarea;
-        admitirlos no demuestra que 20 segundos sean viables a ese tamaño.
+        Los perfiles menores conservan el alto 4:3 anterior hasta 1080.
+        Admitir una resolución no demuestra su rendimiento en videos largos.
         """
         width = cls._dimension("MPC_MAX_WIDTH", max_width, DEFAULT_MPC_WIDTH)
-        height = cls._dimension("MPC_MAX_HEIGHT", max_height, width * 3 // 4)
+        height = cls._dimension("MPC_MAX_HEIGHT", max_height, min(1080, width * 3 // 4))
         return cls(width, height)
 
     @staticmethod

@@ -136,7 +136,7 @@ def test_prepare_accepts_explicit_height_limit(
     assert response.status_code == 200
 
 
-@pytest.mark.parametrize("fps, frame_count", [(5, 100), (10, 200), (5, 200)])
+@pytest.mark.parametrize("fps, frame_count", [(5, 100), (10, 200), (30, 36000)])
 def test_prepare_accepts_temporal_limits(
     client: TestClient, fps: int, frame_count: int
 ) -> None:
@@ -158,9 +158,9 @@ def test_prepare_accepts_temporal_limits(
         ("width", 0),
         ("height", 0),
         ("fps", 0),
-        ("fps", 10.01),
+        ("fps", 30.01),
         ("frame_count", 0),
-        ("frame_count", 201),
+        ("frame_count", -1),
         ("dtype", "uint16"),
         ("channels", 3),
         ("version", 3),
