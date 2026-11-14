@@ -1,8 +1,11 @@
+x-host-user: &host-user "${HOST_UID:-${SUDO_UID:-1000}}:${HOST_GID:-${SUDO_GID:-1000}}"
+
 x-mpc-party: &mpc-party
   image: proyecto-delta-mpc-party:local
   build:
     context: ..
     dockerfile: proyecto-delta/docker/mp-spdz.Dockerfile
+  user: *host-user
   depends_on:
     cert-init:
       condition: service_completed_successfully
@@ -27,6 +30,7 @@ x-mpc-party: &mpc-party
 
 services:
   coordinator-api:
+    user: *host-user
     build:
       context: .
     command: uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
@@ -47,6 +51,7 @@ services:
       retries: 30
 
   cert-init:
+    user: *host-user
     image: proyecto-delta-mpc-party:local
     build:
       context: ..
@@ -104,6 +109,7 @@ services:
     healthcheck: *party-healthcheck
 
   client-api:
+    user: *host-user
     image: proyecto-delta-mpc-party:local
     build:
       context: ..
@@ -139,6 +145,7 @@ services:
       retries: 30
 
   delta-client:
+    user: *host-user
     profiles: ["client"]
     image: proyecto-delta-mpc-party:local
     depends_on:

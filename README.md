@@ -89,8 +89,18 @@ minutos. Las reconstrucciones posteriores usan la caché de Docker.
 Desde `proyecto-delta/`:
 
 ```bash
+export HOST_UID="$(id -u)" HOST_GID="$(id -g)"
 docker compose up --build -d
 docker compose ps
+```
+
+Los servicios escriben en los volúmenes del host con ese UID/GID. Ejecuta
+Compose sin `sudo` (si Docker solo te funciona con `sudo`, configura el acceso
+de tu usuario a Docker primero); si `.runtime/` u `output/` ya quedaron creados
+por root, corrige su propietario una vez desde esta carpeta:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" .runtime output
 ```
 
 Compose levanta:

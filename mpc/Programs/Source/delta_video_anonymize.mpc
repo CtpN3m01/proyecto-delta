@@ -75,7 +75,7 @@ def serve_jobs():
             # bucle por elemento): cada comparación vale 0/1, así que la suma
             # de los inválidos no desborda y es 0 solo si todo es 0 o 1.
             runtime_error_if(
-                ((mask < 0) + (mask > 1)).sum(),
+                sint((mask < 0) + (mask > 1)).sum().reveal(),
                 'La mascara publica debe contener solamente 0 y 1',
             )
 
