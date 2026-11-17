@@ -1,360 +1,111 @@
-# Proyecto Delta — MVP MPC Sprint 1
+﻿# Proyecto Delta — cliente web y MPC (T49)
 
-MVP funcional de infraestructura MPC para video. Un cliente confiable puede
-detectar rostros con YuNet y placas con LPD-YuNet, juntos o por separado, sobre
-los cuadros seleccionados a color y resolución original. Después prepara los
-píxeles grayscale, por defecto hasta 1920x1080 y 30 FPS, conservando la proporción
-y sin ampliar videos pequeños. ExternalIO introduce los píxeles privados y
-las parties aplican máscaras públicas para ocultar las regiones detectadas.
-El modo predeterminado sigue siendo identidad; anonimizar exige selección explícita.
-El cliente reconstruye el resultado en:
+El usuario inicia sesión en la demo y selecciona un MP4. El navegador ejecuta
+YuNet, LPD-YuNet y YOLOX-S, prepara entradas privadas y se conecta a cada party.
+MP-SPDZ aplica las máscaras públicas. El navegador verifica cada píxel de salida,
+genera un MP4 gris sin audio y envía únicamente ese resultado al almacenamiento.
+Una segunda web permite descargarlo. Se retiró el puente `client-api` que recibía
+el original; la CLI Python se conserva para referencias, diagnóstico y pruebas.
 
-```text
-output/<video_id>/reconstructed.mp4
-```
+## Levantar
 
-YOLOX-S cuenta trayectorias de personas y carros en el mismo cliente, sin
-convertir sus cajas en regiones a ocultar. No se suman detecciones por cuadro.
-La web lo activa automáticamente; CLI: `--count-objects`. El conteo estimado se
-guarda como `counts.json` junto al MP4. No garantiza reconocer reingresos largos.
-No hay máximo fijo de duración; el video completo todavía se prepara en RAM.
-Estos máximos no garantizan rendimiento aceptable ni capacidad ilimitada.
-
-El MP4 original y el resultado no anonimizado nunca se envían al Coordinator ni
-a una party individual.
-
-## Arquitectura
-
-```text
-Cliente confiable
-  ├─ metadata/estado HTTP ───────────────> Coordinator FastAPI
-  ├─ control HTTP ───────────────────────> Node Agents P0/P1/P2
-  └─ pixels uint8 privados por ExternalIO
-          ├──────────────────────────────> replicated-ring Party 0
-          ├──────────────────────────────> replicated-ring Party 1
-          └──────────────────────────────> replicated-ring Party 2
-                                             │
-                         delta_video_anonymize.mpc
-                         (identity / anonymize)
-                                             │
-                         reveal_to_clients (solo al cliente)
-                                             ▼
-                              reconstructed.mp4 local
-```
-
-Cada servicio `party-N` contiene un Node Agent FastAPI y un proceso real
-`replicated-ring-party.x`. FastAPI solo controla el job; MP-SPDZ realiza el
-sharing, la comunicación party-to-party y el cálculo secreto. El Node Agent
-inicia o reinicia el runtime al preparar un job y lo detiene durante `cleanup`;
-así un nuevo job funciona incluso después del timeout inactivo de ExternalIO.
-
-La interfaz web se conecta a un puente FastAPI local (`client.local_api`) en
-`127.0.0.1:8001`. Compose levanta este puente como `client-api`: ejecuta el mismo
-cliente Python que la CLI, en la computadora donde corre Docker. El MP4 original
-se envía a ese puente, nunca al Coordinator. El Coordinator
-recibe metadata y coordina las parties, y el resultado reconstruido queda bajo
-`output/web/`.
-
-Decisiones del MVP:
-
-- exactamente tres parties;
-- replicated secret sharing sobre ring de 64 bits;
-- modelo semi-honesto de desarrollo (`program.active = False`);
-- programa `delta_video_anonymize.mpc` con selección explícita; se conserva
-  `delta_video_identity.mpc` como programa anterior compatible;
-- bloques de 4096 pixels;
-- un único job activo;
-- estado y manifests solo en memoria;
-- certificados autofirmados de desarrollo;
-- sin archivos persistentes de shares ni staging de video.
-
-## Requisitos
-
-- Docker Desktop/Engine con Docker Compose;
-- el clon de MP-SPDZ como hermano del repositorio:
-
-  ```text
-  ProyectoDelta/
-  ├── proyecto-delta/
-  └── MP-SPDZ/
-  ```
-
-- Python 3.10 o posterior si se ejecutará la CLI en el host.
-
-La primera construcción compila `replicated-ring-party.x` y puede tardar varios
-minutos. Las reconstrucciones posteriores usan la caché de Docker.
-
-## Construir y levantar
-
-Desde `proyecto-delta/`:
-
-```bash
-export HOST_UID="$(id -u)" HOST_GID="$(id -g)"
-docker compose up --build -d
-docker compose ps
-```
-
-Los servicios escriben en los volúmenes del host con ese UID/GID. Ejecuta
-Compose sin `sudo` (si Docker solo te funciona con `sudo`, configura el acceso
-de tu usuario a Docker primero); si `.runtime/` u `output/` ya quedaron creados
-por root, corrige su propietario una vez desde esta carpeta:
-
-```bash
-sudo chown -R "$(id -u):$(id -g)" .runtime output
-```
-
-Compose levanta:
-
-| Servicio | Puerto host | Responsabilidad |
-|---|---:|---|
-| `coordinator-api` | 8000 | UUID, metadata y ciclo del job |
-| `client-api` | 127.0.0.1:8001 | Recibe el MP4 y ejecuta detección, conteo y cliente MPC |
-| `party-0` | 8100 / 14000 | Node Agent / ExternalIO P0 |
-| `party-1` | 8101 / 14001 | Node Agent / ExternalIO P1 |
-| `party-2` | 8102 / 14002 | Node Agent / ExternalIO P2 |
-| `cert-init` | — | genera certificados de desarrollo y termina |
-
-Los runtimes usan internamente `party-0:5000`, `party-1:5001` y
-`party-2:5002`. `docker compose ps` debe mostrar saludables al Coordinator y a
-las tres parties.
-
-## Ejecutar un video
-
-### Opción A: CLI en el host
-
-En PowerShell:
+El operador necesita Docker Compose y `MP-SPDZ/` como hermano de este repositorio.
+El usuario de las webs solo necesita Chrome de escritorio.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python -m pip install -e .
-python -m client upload C:\ruta\video.mp4
+# Desde proyecto-delta. Windows con Docker Desktop:
+$env:HOST_UID="0"
+$env:HOST_GID="0"
+docker compose up --build -d --wait
 ```
 
-Linux/macOS:
+En Linux, definir `HOST_UID` y `HOST_GID` con el UID/GID del operador, que debe
+poder escribir en `.runtime/`. La primera compilación de MP-SPDZ puede tardar.
+El circuito actual usa ring de 64 bits y bloques de **262144** píxeles.
+No reutilizar un circuito histórico compilado para 4096.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m pip install -e .
-python -m client upload /ruta/video.mp4
-```
+| Servicio | Dirección local | Función |
+| --- | --- | --- |
+| Web de procesamiento | http://localhost:8080 | Login demo; procesamiento automático |
+| Web de consulta | http://localhost:8081 | Listado y descarga sin sesión |
+| Coordinator | http://localhost:8000 | Cola FIFO global; solo metadatos |
+| Parties/adaptadores | http://localhost:8100, :8101, :8102 | Un WebSocket independiente por party |
+| Almacenamiento | http://localhost:8200 | SQLite y archivos en volumen `delta-results` |
 
-El comando equivalente instalado es:
+Demo: `usuario@tecpeopleflow.local` / `UsuarioDemo123!`.
+Administrador: `admin@tecpeopleflow.local` / `AdminDemo123!`.
+El login es demostrativo; las APIs no implementan autenticación real.
 
-```bash
-delta upload /ruta/video.mp4
-```
-
-#### Interfaz web
-
-`docker compose up --build -d --wait` inicia también `client-api` en el puerto
-8001. No hace falta otra instalación Python para utilizar la web.
-Alternativamente, para ejecutar el puente fuera de Docker (no simultáneamente):
-
-```bash
-python -m pip install -e .
-uvicorn client.local_api:app --host 127.0.0.1 --port 8001
-```
-
-En otra terminal, inicia el frontend desde `frontend/` con `npm install` y
-`npm run dev`. El botón **Anonimizar video** envía el archivo al puente por
-loopback y lanza `python -m client upload ... --processing-mode anonymize
---detect-faces --detect-plates --count-objects`. El archivo fuente se borra al terminar;
-resultados, `counts.json` y `client.log` permanecen bajo `output/web/`.
-El dashboard muestra conteos, progreso y permite descargar el resultado.
-El puente acepta por defecto los
-orígenes locales de Vite y Preview; para otro origen configura
-`DELTA_WEB_ORIGINS` con sus URLs exactas, separadas por comas.
-
-### Resolución para MPC
-
-`MPC_MAX_WIDTH` y `MPC_MAX_HEIGHT` configuran la caja máxima en el cliente,
-Coordinator y parties. El perfil predeterminado es 1920x1080; para anchos menores,
-el alto implícito conserva 4:3 hasta un máximo de 1080. La imagen conserva su propia proporción
-y se alinea a dimensiones pares para MP4. YuNet sigue recibiendo los cuadros
-originales a color antes de esta reducción; los píxeles MPC siguen en gris.
-
-La CLI puede elegir una caja menor que la admitida por los servicios:
-
-```bash
-python -m client upload /ruta/video.mp4 --mpc-max-width 320 --mpc-max-height 240
-```
-
-Para cambiar el máximo admitido por los servicios, configurar ambas variables
-en `.env` y recrear Compose. Para la CLI del host se usan las mismas variables
-de entorno o los argumentos anteriores; no se carga `.env` automáticamente.
-Los perfiles admitidos están acotados a 1920x1080; no se cambió el protocolo MPC.
-Recrear las tres parties es necesario para cargar el circuito sin el presupuesto
-anterior de 200 cuadros. Solo se mantiene la cota técnica del entero de 64 bits.
-
-Referencia histórica del perfil anterior: se probaron cuatro cuadros a 2 FPS mediante tres parties reales: en la medición
-final con muestreo de memoria, MPC tardó 17,02 s a 320x240, 37,12 s a 480x360
-y 65,09 s a 640x480 en Docker local. El flujo completo tardó 18,15 / 44,21 /
-72,46 s respectivamente. ExternalIO privado intercambió 22,12 / 49,85 / 88,48 MB
-de aplicación (envío + recepción; no incluye TLS/TCP ni tráfico entre parties).
-
-### FPS para MPC
-
-El cliente muestrea hasta **30 FPS** por defecto, sin un límite fijo de duración
-ni de cantidad de cuadros. Si el original tiene menos FPS, conserva
-su frecuencia; no duplica ni inventa cuadros. YuNet analiza cada cuadro
-seleccionado en su resolución original y a color, antes de gris/resize.
-
-Para volver al menor costo de 5 FPS, sin cambiar la resolución:
-
-```bash
-python -m client upload /ruta/video.mp4 --mpc-fps 5
-```
-
-`--mpc-fps` acepta valores mayores que 0 y hasta 30. La reconstrucción utiliza
-los FPS del muestreo para mantener la duración, no para acelerar el video.
-Pasar de 5 a 10 FPS con la misma duración y resolución implica aproximadamente
-el doble de cuadros y comunicación; el tiempo real debe medirse. No cambia el
-protocolo ni el programa MPC de identidad.
-
-Si Compose ya estaba levantado con el límite anterior de 5 FPS/100 cuadros,
-ejecutar `docker compose up --build -d` para actualizar también las validaciones
-del Coordinator y las parties. Cambiar solo el cliente no basta.
-
-Mediciones históricas, no benchmarks del perfil nuevo: se compararon ambos perfiles con el mismo clip original a color de 640x480,
-30 FPS y un segundo, mediante las tres parties reales del Compose habitual:
-
-| Muestreo | Cuadros procesados | Tiempo MPC | Flujo CLI completo | ExternalIO privado (MB) |
-|---|---:|---:|---:|---:|
-| 5 FPS (`--mpc-fps 5`) | 5 | 46,76 s | 53,53 s | 110,61 |
-| 10 FPS (predeterminado anterior) | 10 | 95,69 s | 102,64 s | 221,21 |
-
-El tráfico medido suma bytes de aplicación enviados y recibidos; excluye TLS/TCP,
-la cabecera pública y comunicación entre parties. Ambos casos conservaron
-identidad exacta antes de codificar, dimensiones y orden temporal. YuNet recibió
-los cuadros originales BGR. A 10 FPS se observaron máximos de 54,60–55,95 MiB
-por party y 107,84 MiB de memoria del cliente; las parties se midieron por
-muestreo, no mediante un pico instantáneo garantizado. Los artefactos locales
-quedan bajo `.runtime/fps-evaluation/`.
-
-El máximo de entrada no demuestra rendimiento aceptable: no se ha verificado
-un video completo de 20 segundos a 640x480 y 10 FPS ni ejecución en Raspberry Pi.
-
-### Opción B: cliente confiable en Docker
-
-Si el video se encuentra dentro de la carpeta del repositorio:
-
-```bash
-docker compose run --rm delta-client upload /workspace/video.mp4
-```
-
-Solo `delta-client` monta el repositorio que contiene el video. Coordinator y
-parties no tienen ese volumen.
-
-## Flujo y validaciones
-
-### Anonimización genérica T025
-
-`upload` conserva identidad por defecto y lo indica en consola. Para detectar
-rostros con YuNet y ocultarlos mediante cajas negras dentro de MPC:
-
-```bash
-python -m client upload /ruta/video.mp4 --processing-mode anonymize --detect-faces
-```
-
-Para ocultar rostros y placas en el mismo trabajo:
+Ambas webs leen `DELTA_STORAGE_URL` al iniciar sus contenedores. También se
+configuran `DELTA_COORDINATOR_URL`, `DELTA_PARTY_URLS` y `DELTA_WEB_ORIGINS`.
+Ver [.env.example](.env.example). Recrear las webs al cambiar las direcciones.
+El servidor sustituto debe conservar el contrato de [docs/T49.md](docs/T49.md).
 
 ```powershell
-python -m client upload "..\video3.mp4" --processing-mode anonymize --detect-faces --detect-plates
-```
-
-Ambos detectores se pueden combinar. Las detecciones automáticas no se mezclan
-con `--regions-json` ni con un plan manual. El blur no está implementado:
-el circuito existente reemplaza con cero (negro) cada píxel dentro de las cajas.
-La CLI admite además JSON de diagnóstico con resultados explícitos por cuadro:
-
-```bash
-python -m client upload /ruta/video.mp4 --processing-mode anonymize --regions-json /ruta/regiones.json
-```
-
-El archivo requiere las dimensiones MPC reales y resultados explícitos para
-todos los cuadros, incluidos los vacíos. Ver formato e integración en
-[T25](TareasDeInvestigacion/T25.md) y contrato en [T24](TareasDeInvestigacion/T24.md).
-Las máscaras se envían públicamente por bloques de 4096 posiciones; los píxeles
-originales entran privadamente y MP-SPDZ calcula `pixel * (1 - máscara)` antes
-de revelar solo el resultado al cliente. No hay fallback a identidad. Se debe
-reconstruir Compose para usar `MPC_PROGRAM=delta_video_anonymize`.
-
-### Flujo de identidad compatible
-
-La CLI:
-
-1. valida el MP4, sin máximo fijo de duración;
-2. ejecuta localmente YuNet en los frames muestreados, anota rostros detectados,
-   reduce resolución/FPS y convierte a grayscale `uint8`;
-3. registra metadata pública y obtiene un UUID;
-4. prepara los tres Node Agents;
-5. envía pixels privados a los tres runtimes mediante ExternalIO;
-6. ejecuta identidad y revela cada bloque exclusivamente al cliente;
-7. compara exactamente los bytes enviados y recibidos antes de codificar;
-8. escribe y vuelve a abrir `reconstructed.mp4`;
-9. marca `COMPLETED` y limpia el estado temporal de las parties.
-
-Estados del Coordinator:
-
-```text
-REGISTERED → PREPARING → MPC_READY → PROCESSING → COMPLETED
-                                             └─→ FAILED
-```
-
-Un segundo registro mientras el primero no se haya limpiado recibe `409`.
-
-## Pruebas
-
-Instalar dependencias de desarrollo y ejecutar la suite rápida:
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pip install -e .
-python -m pytest -m "not e2e"
-```
-
-Con Compose actualizado y saludable, ejecutar el smoke test real
-(64x48, 10 FPS, 1 s; original a 20 FPS):
-
-PowerShell:
-
-```powershell
-$env:RUN_MPC_E2E="1"
-python -m pytest tests/integration/test_mpc_e2e.py -s
-```
-
-Linux/macOS:
-
-```bash
-RUN_MPC_E2E=1 python -m pytest tests/integration/test_mpc_e2e.py -s
-```
-
-## Apagar y limpiar
-
-```bash
+docker compose up -d --force-recreate processing-web catalog-web
 docker compose down
 ```
 
-Los jobs no crean shares ni archivos de entrada en las parties. `.runtime/`
-conserva certificados de desarrollo reutilizables y logs mínimos de los
-runtimes. Los resultados permanecen bajo `output/` en el cliente.
+`down` conserva los resultados; `down -v` elimina su volumen. La cola es volátil,
+requiere un único proceso Uvicorn y no reanuda trabajos al cerrar la pestaña o
+reiniciar el Coordinator. Solo se procesa un video en MPC a la vez.
 
-## Limitaciones del Sprint 1
+## Desarrollo y pruebas
 
-- la CLI conserva identidad por defecto; anonimización negra exige selección
-  explícita. YuNet y LPD-YuNet detectan en el cliente y alimentan la máscara MPC;
-  pueden omitir regiones o generar falsos positivos. No se garantiza cobertura total;
-- las tres parties viven en un solo host y una misma organización;
-- los certificados son de desarrollo y la imagen compartida puede ver el mismo
-  directorio de certificados;
-- no hay base de datos ni recuperación tras reiniciar el Coordinator;
-- se procesa un video a la vez;
-- entrada sin máximo fijo de duración, hasta 30 FPS, grayscale; caja espacial
-  configurable hasta 1920x1080; límites prácticos de RAM, disco y comunicación;
-- el puente HTTP sigue siendo de desarrollo, sin autenticación de servidor;
-  se publica solo en loopback. No exponerlo a Internet cambiando una URL;
-- no se ha preparado todavía el despliegue ARM/Raspberry Pi.
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
+python -m pytest -m "not e2e" -q
+cd frontend
+npm ci
+npm test -- --silent
+npm run build
+npm run dev
+```
+
+`predev` y `prebuild` preparan modelos, licencias y runtimes WASM locales.
+No se descargan recursos desde un CDN durante el procesamiento.
+Los mismos pesos ONNX se ejecutan mediante WASM; solo se adaptan las declaraciones
+de dimensiones de YuNet/LPD para admitir inferencia nativa.
+
+Con Docker saludable y los tres originales junto al repositorio, desde frontend:
+
+```powershell
+$env:RUN_WEB_MPC_E2E="1"
+$env:PLAYWRIGHT_BASE_URL="http://localhost:8080"
+# Opcional: $env:PLAYWRIGHT_BROWSER_PATH="C:\ruta\chrome.exe"
+npx playwright test t49-real --reporter=list
+```
+
+Los E2E reales pueden tardar mucho. Evidencias locales: `.runtime/t49-evidence/`.
+La prueba de paridad usa seis PNG locales generados por
+`python scripts/t49_reference.py`; ejecutar `RUN_T49_PARITY=1` con Playwright
+`t49-parity` contra Vite. Los PNG solo se transfieren a un worker local.
+La CLI sigue disponible para referencia: `python -m client upload ../video3.mp4
+--processing-mode anonymize --detect-faces --detect-plates --count-objects`.
+No ejecutar la CLI simultáneamente con trabajos de navegador.
+
+## Privacidad y límites
+
+Cada adaptador solo se conecta a su runtime y verifica su certificado TLS.
+Las contribuciones se suman exclusivamente en el navegador. Cada contenedor
+monta su propia llave de party, certificados públicos y la llave de transporte
+C0; no monta las llaves privadas de las otras parties. Las máscaras revelan
+posiciones, como en el circuito existente.
+
+Se conserva MP-SPDZ semi-honesto. Este Compose en un único host no demuestra
+independencia entre organizaciones ni protección frente a colusión del operador
+que administra todas las parties. El despliegue remoto requiere HTTPS/WSS y
+configuración de identidad y operación; este MVP no se publicó en Internet.
+
+Perfil: hasta 30 FPS y 1920×1080, proporción conservada, sin ampliar y dimensiones
+pares. Se liberan los cuadros decodificados conforme se procesan. El original
+comprimido y la salida comprimida todavía ocupan memoria proporcional al video.
+FFmpeg/WASM tiene límites adicionales de memoria y su fallback es más lento.
+No se garantiza capacidad de 30 minutos/30 GB ni compatibilidad universal de MP4.
+Los modelos pueden omitir regiones; no se garantiza cobertura total ni conteo
+perfecto. La salida se verifica antes del códec, que introduce pérdidas.
+
+Contrato, implementación y evidencia medida: [docs/T49.md](docs/T49.md).
+La documentación T09–T46 conserva contexto histórico; sus referencias al puente
+Python y a bloques de 4096 no describen la web T49.

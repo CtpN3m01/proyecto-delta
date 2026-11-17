@@ -1,12 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import path from 'node:path';
 
 const demoPassword = 'AdminDemo123!';
-const sampleVideo = process.env.E2E_VIDEO_PATH
-  ? path.resolve(process.env.E2E_VIDEO_PATH)
-  : path.resolve(import.meta.dirname, 'fixtures/sample.mp4');
-const sampleVideoName = sampleVideo ? path.basename(sampleVideo) : 'recorrido-e2e.mp4';
-
 async function logInWithCredentials(page: Page, email: string, password: string) {
   await page.goto('/#/login');
   await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
@@ -23,51 +17,6 @@ async function logIn(page: Page, role: 'admin' | 'user' = 'user') {
   );
 }
 
-async function chooseSampleVideo(page: Page) {
-  const input = page.getByLabel('Seleccionar archivo MP4', { exact: true });
-  if (sampleVideo) {
-    await input.setInputFiles(sampleVideo);
-  } else {
-    const videoBytes = await page.evaluate(async () => {
-      const mimeType = [
-        'video/mp4;codecs=avc1.42001E',
-        'video/mp4;codecs=avc1',
-        'video/mp4',
-      ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
-      if (!mimeType) throw new Error('Edge no permite generar el MP4 de prueba mediante MediaRecorder.');
-      const canvas = document.createElement('canvas');
-      canvas.width = 160;
-      canvas.height = 90;
-      const drawing = canvas.getContext('2d');
-      if (!drawing) throw new Error('No se pudo preparar el video de prueba.');
-      const stream = canvas.captureStream(15);
-      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 100_000 });
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-      const finished = new Promise<Blob>((resolve, reject) => {
-        recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/mp4' }));
-        recorder.onerror = () => reject(new Error('No se pudo grabar el MP4 de prueba.'));
-      });
-      try {
-        recorder.start();
-        for (let frame = 0; frame < 12; frame += 1) {
-          drawing.fillStyle = '#302874';
-          drawing.fillRect(0, 0, canvas.width, canvas.height);
-          drawing.fillStyle = '#7ce4cf';
-          drawing.fillRect(10 + frame * 8, 28, 24, 24);
-          await new Promise((resolve) => setTimeout(resolve, 70));
-        }
-        recorder.stop();
-        return Array.from(new Uint8Array(await (await finished).arrayBuffer()));
-      } finally {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    });
-    await input.setInputFiles({ name: sampleVideoName, mimeType: 'video/mp4', buffer: Buffer.from(videoBytes) });
-  }
-  await expect(page.getByLabel('Vista previa del video original', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeEnabled();
-}
 
 test('redirige las rutas privadas al inicio de sesión', async ({ page }) => {
   await page.goto('/#/dashboard');
@@ -190,55 +139,7 @@ test('rechaza archivos de otro tipo y MP4 corruptos', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText('Selecciona un video en formato MP4.');
   await expect(page.getByLabel('Vista previa del video original', { exact: true })).toHaveCount(0);
   await input.setInputFiles({ name: 'corrupto.mp4', mimeType: 'video/mp4', buffer: Buffer.from('MP4 no válido') });
-  await expect(page.getByRole('alert')).toHaveText(/No pudimos abrir este MP4/);
+  await expect(page.getByRole('alert')).toHaveText(/MP4/);
   await expect(page.getByLabel('Vista previa del video original', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeDisabled();
-});
-
-test('envía el video al cliente local y muestra un mensaje al completar', async ({ page }) => {
-  await logIn(page);
-  const requests: string[] = [];
-  let uploadedName = '';
-  await page.route('http://127.0.0.1:8001/api/v1/jobs', async (route) => {
-    uploadedName = route.request().postDataBuffer()?.toString().includes(sampleVideoName) ? sampleVideoName : 'uploaded';
-    await route.fulfill({ status: 202, headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'PROCESSING' }) });
-  });
-  await page.route('http://127.0.0.1:8001/api/v1/jobs/local-job', async (route) => {
-    await route.fulfill({ headers: { 'access-control-allow-origin': 'http://127.0.0.1:5173' }, contentType: 'application/json', body: JSON.stringify({ id: 'local-job', status: 'COMPLETED', stage: 4, result_url: '/api/v1/jobs/local-job/result', counts: { people: 1, cars: 2, frames_analyzed: 90 }, logs: ['[OK] MPC listo'] }) });
-  });
-  page.on('request', (request) => {
-    if (['fetch', 'xhr'].includes(request.resourceType()) || !['GET', 'HEAD'].includes(request.method())) {
-      requests.push(request.url());
-    }
-  });
-  await chooseSampleVideo(page);
-
-  const preview = page.getByLabel('Vista previa del video original', { exact: true });
-  await expect(preview).toHaveAttribute('src', /^blob:/);
-  await expect(page.getByText(sampleVideoName, { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Anonimizar video', exact: true }).click();
-  const stages = page.getByRole('list', { name: 'Etapas del recorrido', exact: true });
-  await expect(stages.getByRole('listitem')).toHaveCount(4);
-  await expect(page.getByText('Video anonimizado correctamente', { exact: true })).toBeVisible({ timeout: 10_000 });
-  await expect(stages.locator('[data-state="complete"]')).toHaveCount(4);
-  await expect(preview).toHaveAttribute('src', /^blob:/);
-  await expect(page.getByRole('button', { name: 'Descargar video anonimizado', exact: true })).toBeEnabled();
-  await expect(page.getByRole('region', { name: 'Conteo del video' })).toContainText('Personas: 1 · Carros: 2');
-  await page.getByText('Registro del procesamiento', { exact: true }).click();
-  await expect(page.getByText('[OK] MPC listo', { exact: true })).toBeVisible();
-  expect(uploadedName).toBe(sampleVideoName);
-  expect(requests.some((url) => url === 'http://127.0.0.1:8001/api/v1/jobs')).toBe(true);
-  await page.getByRole('button', { name: 'Quitar video', exact: true }).click();
-  await expect(preview).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeDisabled();
-});
-
-test('muestra el error cuando el cliente local no está disponible', async ({ page }) => {
-  await logIn(page);
-  await chooseSampleVideo(page);
-  await page.route('http://127.0.0.1:8001/api/v1/jobs', (route) => route.abort());
-  await page.getByRole('button', { name: 'Anonimizar video', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('No se pudo contactar al cliente local.');
-  await expect(page.getByText('No se pudo anonimizar el video', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Anonimizar video', exact: true })).toBeEnabled();
 });

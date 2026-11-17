@@ -1,7 +1,8 @@
 import { ArrowRight, Check, FileVideo, Info, LoaderCircle, Network, Play, ScanFace, UploadCloud, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import { formatFileSize, inspectVideo, type VideoDetails } from '../services/video-file';
-import { fetchLocalResult, getLocalJob, startLocalAnonymization, type LocalJob } from '../services/local-client';
+import { formatFileSize, inspectVideo, validateVideoFile, type VideoDetails } from '../services/video-file';
+import { processVideo, type PipelineEvent } from '../browser/pipeline';
+import { openVideo } from '../browser/video';
 
 const steps = [
   { title: 'Preparación', detail: 'El cliente prepara los cuadros.', icon: FileVideo },
@@ -20,14 +21,15 @@ export default function DashboardPage() {
   const [error, setError] = useState('');
   const [processing, setProcessing] = useState<ProcessingState>('idle');
   const [stage, setStage] = useState(0);
-  const [job, setJob] = useState<LocalJob | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [job, setJob] = useState<PipelineEvent | null>(null);
+  const [message, setMessage] = useState('');
+  const processingController = useRef<AbortController | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const request = useRef(0);
   const reader = useRef<AbortController | null>(null);
 
   useEffect(() => () => { if (selection) URL.revokeObjectURL(selection.url); }, [selection]);
-  useEffect(() => () => { request.current += 1; reader.current?.abort(); }, []);
+  useEffect(() => () => { request.current += 1; reader.current?.abort(); processingController.current?.abort(); }, []);
   async function selectFile(file: File) {
     const current = ++request.current;
     reader.current?.abort();
@@ -35,8 +37,17 @@ export default function DashboardPage() {
     reader.current = controller;
     setSelection(null); setError(''); setProcessing('idle'); setJob(null); setReading(true);
     try {
-      const details = await inspectVideo(file, controller.signal);
-      if (current === request.current) setSelection({ file, details, url: URL.createObjectURL(file) });
+      validateVideoFile(file);
+      const details = await inspectVideo(file, controller.signal).catch(async error => {
+        if (controller.signal.aborted) throw error;
+        const video = await openVideo(file);
+        return { name: file.name, size: file.size, duration: video.track.duration / video.track.timescale, width: video.sourceWidth, height: video.sourceHeight };
+      });
+      if (current === request.current) {
+        const selected = { file, details, url: URL.createObjectURL(file) };
+        setSelection(selected);
+        void startProcessing(selected);
+      }
     } catch (reason: unknown) {
       if (current === request.current && !(reason instanceof DOMException && reason.name === 'AbortError')) {
         setError(reason instanceof Error ? reason.message : 'No pudimos leer el archivo.');
@@ -63,40 +74,22 @@ export default function DashboardPage() {
     void selectFile(event.dataTransfer.files[0]);
   }
 
-  async function startProcessing() {
-    if (!selection || reading) return;
+  async function startProcessing(selected: Selection | null = selection) {
+    if (!selected) return;
     setStage(0); setError(''); setProcessing('running'); setJob(null);
+    const controller = new AbortController();
+    processingController.current = controller;
     try {
-      const started = await startLocalAnonymization(selection.file);
-      let job = started;
-      setJob(job);
-      while (job.status === 'PROCESSING') {
-        setStage(job.stage ?? 0);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        job = await getLocalJob(started.id);
-        setJob(job);
-      }
-      if (job.status === 'FAILED') throw new Error(job.error || 'El procesamiento del video falló.');
-      if (!job.result_url) throw new Error('El cliente terminó sin proporcionar el video anonimizado.');
+      const result = await processVideo(selected.file, event => {
+        setStage(event.stage ?? 0); setMessage(event.message ?? ''); setJob(event);
+      }, controller.signal);
+      setJob(result);
       setStage(steps.length);
       setProcessing('complete');
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : 'No pudimos procesar el video.');
       setProcessing('failed');
     }
-  }
-
-  async function downloadResult() {
-    if (!job?.result_url) return;
-    setDownloading(true);
-    try {
-      const url = URL.createObjectURL(await fetchLocalResult(job.result_url));
-      const link = document.createElement('a');
-      link.href = url; link.download = 'video-anonimizado.mp4'; link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'No se pudo descargar el resultado.');
-    } finally { setDownloading(false); }
   }
 
   return <div className="dashboard-page">
@@ -121,27 +114,25 @@ export default function DashboardPage() {
           {error && <p className="upload-error" role="alert"><Info size={18} />{error}</p>}
         </div>
       </div>
-      <footer className="upload-actions"><button type="button" className="button button-primary simulate-button" onClick={startProcessing} disabled={!selection || reading || processing === 'running'}>{processing === 'running' ? <LoaderCircle size={17} className="spin" /> : <Play size={16} />}{processing === 'running' ? 'Anonimizando video…' : processing === 'complete' ? 'Procesar de nuevo' : 'Anonimizar video'}<ArrowRight size={17} /></button></footer>
+      <footer className="upload-actions">{processing === 'running' ? <button className="button" onClick={() => processingController.current?.abort()}>Cancelar procesamiento</button> : <button type="button" className="button button-primary simulate-button" onClick={() => void startProcessing()} disabled={!selection || reading}>{processing === 'complete' ? 'Procesar de nuevo' : 'Anonimizar video'}<ArrowRight size={17} /></button>}</footer>
     </section>
 
     {processing !== 'idle' && <section className={`simulation-panel ${processing === 'complete' ? 'simulation-complete' : ''}`} aria-label="Procesamiento del video">
-      <div className="simulation-heading"><div><span className="small-badge">{processing === 'failed' ? 'PROCESAMIENTO FALLIDO' : 'ANONIMIZACIÓN MPC'}</span><h2 role="status">{processing === 'complete' ? 'Video anonimizado correctamente' : processing === 'failed' ? 'No se pudo anonimizar el video' : 'Procesando video en el cliente local'}</h2></div></div>
+      <div className="simulation-heading"><div><span className="small-badge">{processing === 'failed' ? 'PROCESAMIENTO FALLIDO' : 'ANONIMIZACIÓN MPC'}</span><h2 role="status">{processing === 'complete' ? 'Video anonimizado y almacenado correctamente' : processing === 'failed' ? 'No se pudo anonimizar el video' : 'Procesando video en este navegador'}</h2></div></div>
       <ol className="simulation-steps" aria-label="Etapas del recorrido">{steps.map((step, index) => {
         const complete = processing === 'complete' || index < stage;
         const active = processing === 'running' && index === stage;
         return <li key={step.title} data-state={complete ? 'complete' : active ? 'active' : 'pending'}><span className="simulation-step-icon">{complete ? <Check size={16} /> : active ? <LoaderCircle size={16} className="spin" /> : index + 1}</span><div><strong>{step.title}</strong><small>{complete ? 'Completada' : active ? 'En curso' : 'Pendiente'}</small></div></li>;
       })}</ol>
-      {processing === 'running' && <p><Info size={15} />El archivo se envía al servicio local de Proyecto Delta; el coordinator recibe metadata y coordina las parties MPC.</p>}
+      {processing === 'running' && <p aria-live="polite"><Info size={15} />{message}</p>}
       {processing === 'complete' && job?.counts && <section aria-label="Conteo del video">
         <h3>Conteo del video</h3>
         <p>Personas: <strong>{job.counts.people}</strong> · Carros: <strong>{job.counts.cars}</strong></p>
         <small>{job.counts.limitation ?? 'Conteo estimado de trayectorias; no suma detecciones de cada cuadro.'}</small>
       </section>}
-      {processing === 'complete' && job?.result_url && <button className="button button-primary" onClick={downloadResult} disabled={downloading}>
-        {downloading ? 'Descargando…' : 'Descargar video anonimizado'}
-      </button>}
-      {!!job?.logs?.length && <details><summary>Registro del procesamiento</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{job.logs.join('\n')}</pre></details>}
+      {processing === 'complete' && <p>El resultado está disponible en la web de consulta.</p>}
+      {!!job?.logs?.length && <details><summary>Registro del procesamiento</summary><pre style={{ whiteSpace: 'pre-wrap' }}>{job.logs.join('\n')}</pre></details>}
     </section>}
-    <section id="como-funciona" className="process-section" aria-labelledby="process-title"><div className="section-heading"><div><span className="eyebrow">PROCESAMIENTO LOCAL</span><h2 id="process-title">¿Qué sucede con tu video?</h2><p>El cliente local prepara los cuadros, los procesa con MPC y reconstruye el resultado en esta computadora.</p></div><span className="process-label"><span />CLIENTE + MPC</span></div><div className="process-grid">{steps.map((step, index) => <article className="process-step" key={step.title}><div className="process-icon"><step.icon size={23} /><span>0{index + 1}</span></div><h3>{step.title}</h3><p>{step.detail}</p></article>)}</div></section>
+    <section id="como-funciona" className="process-section" aria-labelledby="process-title"><div className="section-heading"><div><span className="eyebrow">PROCESAMIENTO EN TU NAVEGADOR</span><h2 id="process-title">¿Qué sucede con tu video?</h2><p>Tu navegador detecta las regiones, intercambia entradas privadas con MPC y guarda únicamente el resultado anonimizado.</p></div><span className="process-label"><span />NAVEGADOR + MPC</span></div><div className="process-grid">{steps.map((step, index) => <article className="process-step" key={step.title}><div className="process-icon"><step.icon size={23} /><span>0{index + 1}</span></div><h3>{step.title}</h3><p>{step.detail}</p></article>)}</div></section>
   </div>;
 }

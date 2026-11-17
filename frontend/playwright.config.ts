@@ -18,8 +18,8 @@ export default defineConfig({
   },
   projects: [
     {
-      name: 'edge',
-      use: { ...devices['Desktop Edge'], channel: executablePath ? undefined : 'msedge',
+      name: process.env.PLAYWRIGHT_BROWSER_NAME ?? 'chrome',
+      use: { ...devices['Desktop Chrome'], channel: executablePath ? undefined : 'chrome',
         ...(executablePath ? { launchOptions: { executablePath } } : {}) },
     },
   ],

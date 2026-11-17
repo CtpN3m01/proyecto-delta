@@ -5,6 +5,10 @@ frontend/node_modules
 frontend/dist
 frontend/playwright-report
 frontend/test-results
+frontend/test-results-t49-*
+frontend/.sites-runtime
+frontend/public/models
+frontend/public/vendor
 results
 __pycache__
 *.py[cod]

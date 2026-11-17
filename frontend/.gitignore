@@ -7,3 +7,4 @@ playwright-report/
 .env
 *.local
 *.tsbuildinfo
+test-results-t49-*/

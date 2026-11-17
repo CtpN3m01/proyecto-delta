@@ -1,5 +1,7 @@
 # Guía simple de Proyecto Delta
 
+> Actualización T49: esta guía conserva la arquitectura histórica. El recorrido web vigente ejecuta los modelos y el cliente MPC en el navegador; el puente que recibía el original se retiró. Consultar [README](README.md) y [T49](docs/T49.md) para despliegue, contratos y pruebas actuales.
+
 Esta guía explica qué hace el proyecto, cómo se relacionan sus partes y dónde se encuentra cada cosa. Está dividida en dos niveles:
 
 1. una explicación sencilla, pensada para alguien que no conoce MPC;
