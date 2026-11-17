@@ -1,6 +1,6 @@
 # Proyecto Delta — MVP MPC Sprint 1
 
-MVP funcional de infraestructura MPC para video. Un cliente confiable puede
+MVP funcional de autenticación con PocketBase e infraestructura MPC para video. Un cliente confiable puede
 detectar rostros con YuNet y placas con LPD-YuNet, juntos o por separado, sobre
 los cuadros seleccionados a color y resolución original. Después prepara los
 píxeles grayscale, por defecto hasta 1920x1080 y 30 FPS, conservando la proporción
@@ -22,6 +22,16 @@ Estos máximos no garantizan rendimiento aceptable ni capacidad ilimitada.
 
 El MP4 original y el resultado no anonimizado nunca se envían al Coordinator ni
 a una party individual.
+
+## Autenticación con PocketBase
+
+PocketBase guarda las cuentas en la colección de autenticación `users`; el frontend usa su SDK directamente. Los roles `admin` y `user` se autorizan con reglas del servidor: solo administradores pueden consultar o crear cuentas. No hay registro público ni credenciales de demostración. La base se conserva en el volumen Docker `pocketbase-data`.
+
+La migración configura la colección `users` al iniciar PocketBase por primera vez. Crea el superusuario desde la raíz del proyecto con `docker compose exec pocketbase /pb/pocketbase superuser upsert 'tu-correo@ejemplo.com' 'tu-contraseña'`. Después entra a `http://127.0.0.1:8090/_/` y, desde **Collections → users**, crea la primera cuenta de aplicación con `role=admin`. Ese usuario de aplicación será quien gestione las cuentas cotidianas desde **Usuarios** en el frontend. Como alternativa, PocketBase imprime en sus logs un enlace temporal de instalación; si contiene `0.0.0.0`, reemplázalo por `127.0.0.1` antes de abrirlo.
+
+En `frontend/`, copia `.env.example` a `.env` y ajusta `VITE_POCKETBASE_URL` si PocketBase no está en `http://127.0.0.1:8090`. Luego inicia Vite con `npm install` y `npm run dev`.
+
+La secuencia completa de inicio, configuración de cuentas, comandos por terminal y solución de problemas está en la [guía de ejecución del MVP web](docs/EJECUCION_MVP.md).
 
 ## Arquitectura
 
@@ -107,6 +117,7 @@ Compose levanta:
 
 | Servicio | Puerto host | Responsabilidad |
 |---|---:|---|
+| `pocketbase` | 127.0.0.1:8090 | Autenticación, usuarios, roles y persistencia |
 | `coordinator-api` | 8000 | UUID, metadata y ciclo del job |
 | `client-api` | 127.0.0.1:8001 | Recibe el MP4 y ejecuta detección, conteo y cliente MPC |
 | `party-0` | 8100 / 14000 | Node Agent / ExternalIO P0 |
@@ -159,8 +170,7 @@ python -m pip install -e .
 uvicorn client.local_api:app --host 127.0.0.1 --port 8001
 ```
 
-En otra terminal, inicia el frontend desde `frontend/` con `npm install` y
-`npm run dev`. El botón **Anonimizar video** envía el archivo al puente por
+En otra terminal, inicia el frontend desde `frontend/` con `cp .env.example .env`, `npm install` y `npm run dev`. Para las pruebas E2E autenticadas, configura `E2E_ADMIN_EMAIL`, `E2E_ADMIN_PASSWORD`, `E2E_USER_EMAIL` y `E2E_USER_PASSWORD` con cuentas de aplicación existentes en PocketBase. El botón **Anonimizar video** envía el archivo al puente por
 loopback y lanza `python -m client upload ... --processing-mode anonymize
 --detect-faces --detect-plates --count-objects`. El archivo fuente se borra al terminar;
 resultados, `counts.json` y `client.log` permanecen bajo `output/web/`.

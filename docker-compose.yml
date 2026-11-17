@@ -29,6 +29,21 @@ x-mpc-party: &mpc-party
   stop_grace_period: 15s
 
 services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: docker/pocketbase.Dockerfile
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - pocketbase-data:/pb/pb_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8090/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   coordinator-api:
     user: *host-user
     build:
@@ -171,3 +186,6 @@ services:
       MPC_MAX_HEIGHT: ${MPC_MAX_HEIGHT:-}
     volumes:
       - .:/workspace
+
+volumes:
+  pocketbase-data:

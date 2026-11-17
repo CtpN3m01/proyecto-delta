@@ -5,12 +5,15 @@ import path from 'node:path';
 test('Brave/web → API Docker → tres parties → conteos y descarga reales', async ({ page }) => {
   test.skip(process.env.RUN_WEB_MPC_E2E !== '1', 'Prueba opt-in con Docker y un clip H.264 corto');
   test.setTimeout(240_000);
+  if (!process.env.E2E_USER_EMAIL || !process.env.E2E_USER_PASSWORD) {
+    throw new Error('Configura E2E_USER_EMAIL y E2E_USER_PASSWORD con una cuenta de aplicación antes de ejecutar la prueba.');
+  }
   const source = process.env.WEB_MPC_VIDEO_PATH;
   if (!source) throw new Error('WEB_MPC_VIDEO_PATH debe apuntar a un clip corto, no al video completo');
   const started = Date.now();
   await page.goto('/#/login');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('usuario@tecpeopleflow.local');
-  await page.getByLabel('Contraseña', { exact: true }).fill('UsuarioDemo123!');
+  await page.getByLabel('Correo electrónico', { exact: true }).fill(process.env.E2E_USER_EMAIL ?? '');
+  await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_USER_PASSWORD ?? '');
   await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
   await expect(page).toHaveURL(/#\/dashboard$/);
   await page.getByLabel('Seleccionar archivo MP4', { exact: true }).setInputFiles(source);

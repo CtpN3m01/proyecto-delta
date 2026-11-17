@@ -1,7 +1,16 @@
 import { expect, test, type Page } from '@playwright/test';
 import path from 'node:path';
 
-const demoPassword = 'AdminDemo123!';
+const adminEmail = process.env.E2E_ADMIN_EMAIL ?? '';
+const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? '';
+const userEmail = process.env.E2E_USER_EMAIL ?? '';
+const userPassword = process.env.E2E_USER_PASSWORD ?? '';
+
+function requireCredentials(role: 'admin' | 'user') {
+  const values = role === 'admin' ? [adminEmail, adminPassword] : [userEmail, userPassword];
+  if (values.some((value) => !value)) throw new Error(`Configura E2E_${role.toUpperCase()}_EMAIL y E2E_${role.toUpperCase()}_PASSWORD para ejecutar las pruebas autenticadas.`);
+  return values as [string, string];
+}
 const sampleVideo = process.env.E2E_VIDEO_PATH
   ? path.resolve(process.env.E2E_VIDEO_PATH)
   : path.resolve(import.meta.dirname, 'fixtures/sample.mp4');
@@ -16,11 +25,8 @@ async function logInWithCredentials(page: Page, email: string, password: string)
 }
 
 async function logIn(page: Page, role: 'admin' | 'user' = 'user') {
-  await logInWithCredentials(
-    page,
-    role === 'admin' ? 'admin@tecpeopleflow.local' : 'usuario@tecpeopleflow.local',
-    role === 'admin' ? demoPassword : 'UsuarioDemo123!',
-  );
+  const [email, password] = requireCredentials(role);
+  await logInWithCredentials(page, email, password);
 }
 
 async function chooseSampleVideo(page: Page) {
@@ -79,13 +85,33 @@ test('redirige las rutas privadas al inicio de sesión', async ({ page }) => {
 
 test('rechaza credenciales incorrectas y no ofrece registro público', async ({ page }) => {
   await page.goto('/#/login');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@tecpeopleflow.local');
+  await page.getByLabel('Correo electrónico', { exact: true }).fill(adminEmail || 'no-existe@example.test');
   await page.getByLabel('Contraseña', { exact: true }).fill('ClaveIncorrecta123!');
   await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page).toHaveURL(/#\/login$/);
   await expect(page.getByRole('link', { name: /registr/i })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /registr/i })).toHaveCount(0);
+});
+
+test('PocketBase impide listar y crear cuentas desde la sesión de usuario', async ({ page }) => {
+  await logIn(page, 'user');
+  const result = await page.evaluate(async (baseUrl) => {
+    const saved = JSON.parse(sessionStorage.getItem('tecpeopleflow.pocketbase.auth.v1') ?? '{}');
+    const headers = { Authorization: saved.token, 'Content-Type': 'application/json' };
+    const list = await fetch(`${baseUrl}/api/collections/users/records`, { headers });
+    const listBody = await list.json();
+    const create = await fetch(`${baseUrl}/api/collections/users/records`, {
+      method: 'POST', headers, body: JSON.stringify({
+        name: 'Escalamiento', email: 'escalamiento@example.test', password: 'Password123!',
+        passwordConfirm: 'Password123!', role: 'admin',
+      }),
+    });
+    return { listStatus: list.status, listedItems: listBody.items?.length, createStatus: create.status };
+  }, process.env.VITE_POCKETBASE_URL || 'http://127.0.0.1:8090');
+  expect(result.listStatus).toBe(200);
+  expect(result.listedItems).toBe(0);
+  expect(result.createStatus).toBe(400);
 });
 
 test('mantiene la sesión al recargar, restringe administración y permite salir', async ({ page }) => {
@@ -120,7 +146,7 @@ test('mantiene el dashboard limpio y aprovecha el ancho de carga en escritorio y
   }
 });
 
-test('guarda credenciales derivadas y mantiene la sesión fuera de localStorage', async ({ page, context }) => {
+test('mantiene la sesión en sessionStorage y no en localStorage', async ({ page, context }) => {
   await logIn(page, 'admin');
   const storage = await page.evaluate(() => ({
     persistent: JSON.stringify(localStorage),
@@ -128,10 +154,9 @@ test('guarda credenciales derivadas y mantiene la sesión fuera de localStorage'
     sessionKeys: Object.keys(sessionStorage),
     persistentKeys: Object.keys(localStorage),
   }));
-  expect(storage.persistent).toContain('admin@tecpeopleflow.local');
-  expect(storage.persistent).not.toContain(demoPassword);
-  expect(storage.persistent).not.toContain('UsuarioDemo123!');
+  expect(storage.persistent).toBe('{}');
   expect(storage.session).not.toBe('{}');
+  expect(storage.session).not.toContain(adminPassword);
   expect(storage.sessionKeys.some((key) => storage.persistentKeys.includes(key))).toBe(false);
 
   const separateTab = await context.newPage();
@@ -147,7 +172,7 @@ test('el administrador crea cuentas de ambos roles y evita correos duplicados', 
   await expect(page.getByRole('heading', { name: 'Personas y accesos', exact: true })).toBeVisible();
 
   for (const role of ['user', 'admin'] as const) {
-    const email = `e2e.${role}@tecpeopleflow.local`;
+    const email = `e2e.${role}@example.test`;
     await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Crear usuario', exact: true });
     await expect(dialog).toBeVisible();
@@ -163,7 +188,7 @@ test('el administrador crea cuentas de ambos roles y evita correos duplicados', 
   await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Crear usuario', exact: true });
   await dialog.getByLabel('Nombre completo', { exact: true }).fill('Correo repetido');
-  await dialog.getByLabel('Correo electrónico', { exact: true }).fill('e2e.user@tecpeopleflow.local');
+  await dialog.getByLabel('Correo electrónico', { exact: true }).fill('e2e.user@example.test');
   await dialog.getByLabel('Contraseña', { exact: true }).fill('UsuarioNuevo123!');
   await dialog.getByRole('button', { name: 'Crear usuario', exact: true }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
@@ -172,7 +197,7 @@ test('el administrador crea cuentas de ambos roles y evita correos duplicados', 
 
   for (const role of ['user', 'admin'] as const) {
     await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
-    await logInWithCredentials(page, `e2e.${role}@tecpeopleflow.local`, 'UsuarioNuevo123!');
+    await logInWithCredentials(page, `e2e.${role}@example.test`, 'UsuarioNuevo123!');
     if (role === 'admin') {
       await expect(page.getByRole('link', { name: 'Usuarios', exact: true })).toBeVisible();
     } else {

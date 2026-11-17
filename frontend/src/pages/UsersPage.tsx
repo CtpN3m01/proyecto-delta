@@ -13,11 +13,11 @@ import {
   UsersRound,
   X,
 } from 'lucide-react';
-import type { CreateUserInput, DemoUser, UserRole } from '../types';
+import type { CreateUserInput, AppUser, UserRole } from '../types';
 import './users.css';
 
 interface UsersPageProps {
-  users: DemoUser[];
+  users: AppUser[];
   onCreateUser: (input: CreateUserInput) => Promise<void>;
 }
 

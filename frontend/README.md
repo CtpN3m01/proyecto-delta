@@ -1,12 +1,13 @@
 # TEC PeopleFlow · frontend web
 
-Interfaz local de React y TypeScript para el acceso por roles y la anonimización de video. El login sigue siendo una demostración del navegador; el procesamiento de video sí requiere el puente local, el Coordinator y las parties MPC.
+Interfaz local de React y TypeScript para iniciar sesión con PocketBase, administrar cuentas por rol y anonimizar video. El procesamiento requiere el puente local, el Coordinator y las parties MPC.
 
 ## Ejecutar
 
 Requiere Node.js **22.12 o posterior** y npm. Desde esta carpeta:
 
 ```sh
+cp .env.example .env
 npm install
 npm run dev
 ```
@@ -15,16 +16,13 @@ Abre la dirección que muestre Vite, normalmente `http://127.0.0.1:5173`. Si Pow
 
 Las rutas usan `HashRouter`: `/#/login`, `/#/dashboard` y `/#/admin/users`. El directorio generado `dist/` puede servirse como sitio estático sin reglas de reescritura.
 
-## Cuentas de demostración
+## Autenticación y cuentas
 
-| Rol | Correo | Contraseña |
-| --- | --- | --- |
-| Administrador | `admin@tecpeopleflow.local` | `AdminDemo123!` |
-| Usuario | `usuario@tecpeopleflow.local` | `UsuarioDemo123!` |
+La autenticación usa PocketBase en `http://127.0.0.1:8090` por defecto. Configura `VITE_POCKETBASE_URL` en `.env` si la API está en otra URL accesible desde el navegador. Levanta PocketBase desde la raíz con `docker compose up --build -d`; la migración crea la colección `users` y el volumen `pocketbase-data` conserva sus registros.
 
-El administrador puede crear cuentas de ambos roles desde **Usuarios**. No hay registro público. El usuario normal sólo accede a su espacio; las rutas de administración comprueban el rol.
+Crea el superusuario desde la raíz del proyecto con `docker compose exec pocketbase /pb/pocketbase superuser upsert 'tu-correo@ejemplo.com' 'tu-contraseña'` y luego abre el Dashboard (`http://127.0.0.1:8090/_/`). En **Collections → users**, crea la primera cuenta de aplicación con el rol `admin`. Después, ese administrador puede dar de alta cuentas `admin` o `user` desde **Usuarios**. También puedes usar el enlace temporal de instalación que aparece en `docker compose logs pocketbase`; cambia `0.0.0.0` por `127.0.0.1` si aparece en la URL. No hay registro público ni cuentas precargadas. Las reglas de la colección PocketBase restringen las operaciones administrativas en el servidor. La sesión del SDK queda en `sessionStorage` y **Cerrar sesión** la elimina.
 
-Las cuentas y sus contraseñas derivadas con PBKDF2 se guardan en `localStorage`; la sesión de la pestaña se guarda en `sessionStorage`. Recargar mantiene esa sesión y **Cerrar sesión** la elimina. Es una demostración del navegador: los datos pueden inspeccionarse o modificarse localmente y no sustituyen autenticación ni autorización de un servidor. Para reiniciar las cuentas, borra los datos del sitio en el navegador.
+Para levantar el conjunto completo de servicios, crear las cuentas iniciales y consultar los comandos por sistema operativo, sigue la [guía de ejecución del MVP web](../docs/EJECUCION_MVP.md).
 
 ## Anonimizar un video desde la interfaz
 
@@ -77,4 +75,4 @@ $env:E2E_VIDEO_PATH = 'C:\ruta\video-corto.mp4'
 npm.cmd run test:e2e
 ```
 
-La suite comprueba el acceso por roles, la creación de usuarios, los errores de selección, la vista previa original y el contrato HTTP del procesamiento mediante respuestas simuladas. Los informes quedan en `playwright-report/` y las evidencias de fallos en `test-results/`. Esos directorios, `node_modules/` y `dist/` están excluidos de Git.
+La suite comprueba acceso por roles, creación de cuentas y reglas de PocketBase, errores de selección, vista previa original y el contrato HTTP del procesamiento mediante respuestas simuladas. Para las pruebas autenticadas define `E2E_ADMIN_EMAIL`, `E2E_ADMIN_PASSWORD`, `E2E_USER_EMAIL` y `E2E_USER_PASSWORD` con cuentas existentes de cada rol. Los informes quedan en `playwright-report/` y las evidencias de fallos en `test-results/`. Esos directorios, `node_modules/` y `dist/` están excluidos de Git.
