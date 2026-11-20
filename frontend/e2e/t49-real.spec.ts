@@ -1,9 +1,12 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { login } from './auth';
 test.use({ trace: 'off' });
 
-for (const name of (process.env.T49_VIDEO ? [process.env.T49_VIDEO] : ['video1.mp4', 'video2.mp4', 'video3.mp4'])) test(`T49 browser → MPC → storage → catalog: ${name}`, async ({ page, context }) => {
+const sources = process.env.E2E_VIDEO_PATH ? [process.env.E2E_VIDEO_PATH] : process.env.T49_VIDEO ? [process.env.T49_VIDEO] : ['video1.mp4', 'video2.mp4', 'video3.mp4'];
+for (const source of sources) test(`T49 browser → MPC → storage → catalog: ${path.basename(source)}`, async ({ page, context }) => {
+  const name = path.basename(source);
   test.skip(process.env.RUN_WEB_MPC_E2E !== '1', 'Requires real Docker parties, browser and root videos');
   test.setTimeout(21_600_000);
   const evidence = path.resolve('../.runtime/t49-evidence');
@@ -37,12 +40,8 @@ for (const name of (process.env.T49_VIDEO ? [process.env.T49_VIDEO] : ['video1.m
     if (response.url().endsWith('/api/v1/browser-jobs') && response.status() === 202) ticket = (await response.json()).id;
     if (response.url().endsWith('/api/v1/results') && response.status() === 201) resultId = (await response.json()).id;
   });
-  await page.goto('/#/login');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('usuario@tecpeopleflow.local');
-  await page.getByLabel('Contraseña', { exact: true }).fill('UsuarioDemo123!');
-  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
-  await expect(page).toHaveURL(/#\/dashboard$/);
-  await page.getByLabel('Seleccionar archivo MP4', { exact: true }).setInputFiles(path.resolve('../..', name));
+  await login(page);
+  await page.getByLabel('Seleccionar archivo MP4', { exact: true }).setInputFiles(path.resolve('../..', source));
   const timer = setInterval(async () => {
     console.log(name, await page.locator('.simulation-panel').innerText().catch(() => 'preparing'));
   }, 60_000);

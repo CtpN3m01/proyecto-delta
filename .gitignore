@@ -20,3 +20,6 @@ data/parties/*/*.tmp
 frontend/public/models/
 frontend/public/vendor/
 data/results/
+
+# PocketBase local; las migraciones sí se versionan.
+pb_data/

@@ -28,6 +28,21 @@ x-mpc-party: &mpc-party
   stop_grace_period: 15s
 
 services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: docker/pocketbase.Dockerfile
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - pocketbase-data:/pb/pb_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8090/api/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   coordinator-api:
     user: *host-user
     build:
@@ -127,6 +142,7 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
     environment: &web-environment
+      DELTA_POCKETBASE_URL: ${DELTA_POCKETBASE_URL:-http://127.0.0.1:8090}
       DELTA_COORDINATOR_URL: ${DELTA_COORDINATOR_URL:-http://localhost:8000}
       DELTA_PARTY_URLS: ${DELTA_PARTY_URLS:-http://localhost:8100,http://localhost:8101,http://localhost:8102}
       DELTA_STORAGE_URL: ${DELTA_STORAGE_URL:-http://localhost:8200}
@@ -174,3 +190,4 @@ services:
 
 volumes:
   delta-results:
+  pocketbase-data:

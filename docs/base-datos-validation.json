@@ -1,0 +1,111 @@
+{
+  "date": "2026-11-19",
+  "timezone": "America/Costa_Rica",
+  "base_main": "5f9c116a76cd8cc43fd552dc73c3c79452b4c7fa",
+  "merged_branch": "origin/base-datos",
+  "merged_branch_commit_short": "7b5ada6",
+  "checks": {
+    "python": {
+      "passed": 557,
+      "deselected_e2e": 7,
+      "deprecation_warnings": 2
+    },
+    "frontend_unit": {
+      "passed": 51
+    },
+    "typescript_and_vite_build": true,
+    "docker_build_pocketbase_and_web": true,
+    "playwright": {
+      "passed": 9,
+      "runtime": "Microsoft Edge Chromium 157.0.4341.60",
+      "emulated_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.4 Safari/537.36"
+    },
+    "pocketbase_restart_retained_users": true,
+    "public_registration_denied": true,
+    "user_role_escalation_denied": true,
+    "admin_can_list_and_create_both_roles": true,
+    "runtime_pocketbase_url_override": true,
+    "test_database_isolated_and_removed": true,
+    "linux_shell_syntax_and_lf": true
+  },
+  "mpc_smoke": {
+    "source": "8 frames locally transcoded from video3.mp4",
+    "total_seconds": 88.91,
+    "ticket": "085fc43c-6fa8-4673-88c3-ee69a4e98959",
+    "result_id": "25f15875-0da9-4b33-894b-bbffcf91114d",
+    "metadata": {
+      "width": 478,
+      "height": 850,
+      "fps": 30,
+      "frame_count": 8,
+      "channels": 1,
+      "dtype": "uint8",
+      "version": 2
+    },
+    "counts": {
+      "people": 1,
+      "cars": 3,
+      "frames_analyzed": 8,
+      "limitation": "Trayectorias estimadas; oclusiones, cruces o reingresos pueden omitir o duplicar objetos."
+    },
+    "face_observations": 8,
+    "plate_observations": 8,
+    "timings": {
+      "detection_seconds": 22.27866499994695,
+      "exchange_seconds": 33.482320000007746,
+      "processing_seconds": 60.28977500000596
+    },
+    "download_bytes": 134269,
+    "download_sha256": "bd73154b809ee384722e33fb41fd65c49f3b30eab0e2a34ab413d597c64aaf40",
+    "catalog_sha256_matches_download": true,
+    "decoded_frames": 8,
+    "decoded_fps": 30.0,
+    "maximum_chroma_difference": 0,
+    "audio_tracks": 0,
+    "video_tracks": 1,
+    "codec": "avc1.42c01f",
+    "http_posts_metadata_only": [
+      {
+        "method": "POST",
+        "url": "http://127.0.0.1:18090/api/collections/users/auth-with-password",
+        "bytes": 93
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/browser-jobs",
+        "bytes": 50
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/browser-jobs/085fc43c-6fa8-4673-88c3-ee69a4e98959/start",
+        "bytes": 105
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/browser-jobs/085fc43c-6fa8-4673-88c3-ee69a4e98959/storing",
+        "bytes": null
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8200/api/v1/results",
+        "bytes": null
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/browser-jobs/085fc43c-6fa8-4673-88c3-ee69a4e98959/complete",
+        "bytes": null
+      },
+      {
+        "method": "POST",
+        "url": "http://localhost:8200/api/v1/results/25f15875-0da9-4b33-894b-bbffcf91114d/publish",
+        "bytes": null
+      }
+    ]
+  },
+  "limits": [
+    "No long-video acceptance rerun in this integration.",
+    "Chrome was unavailable or failed launch on this host; browser checks used installed Edge Chromium.",
+    "PocketBase controls users; MPC and result-storage APIs retain the unauthenticated T49 contract.",
+    "The main PocketBase database has no default application accounts."
+  ]
+}

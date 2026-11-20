@@ -1,22 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-
-const demoPassword = 'AdminDemo123!';
-async function logInWithCredentials(page: Page, email: string, password: string) {
-  await page.goto('/#/login');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill(email);
-  await page.getByLabel('Contraseña', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
-  await expect(page).toHaveURL(/#\/dashboard$/);
-}
-
-async function logIn(page: Page, role: 'admin' | 'user' = 'user') {
-  await logInWithCredentials(
-    page,
-    role === 'admin' ? 'admin@tecpeopleflow.local' : 'usuario@tecpeopleflow.local',
-    role === 'admin' ? demoPassword : 'UsuarioDemo123!',
-  );
-}
-
+import { expect, test } from '@playwright/test';
+import { credentials, login as logIn, loginWithCredentials as logInWithCredentials } from './auth';
 
 test('redirige las rutas privadas al inicio de sesión', async ({ page }) => {
   await page.goto('/#/dashboard');
@@ -28,7 +11,7 @@ test('redirige las rutas privadas al inicio de sesión', async ({ page }) => {
 
 test('rechaza credenciales incorrectas y no ofrece registro público', async ({ page }) => {
   await page.goto('/#/login');
-  await page.getByLabel('Correo electrónico', { exact: true }).fill('admin@tecpeopleflow.local');
+  await page.getByLabel('Correo electrónico', { exact: true }).fill('incorrecto@example.test');
   await page.getByLabel('Contraseña', { exact: true }).fill('ClaveIncorrecta123!');
   await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible();
@@ -69,7 +52,7 @@ test('mantiene el dashboard limpio y aprovecha el ancho de carga en escritorio y
   }
 });
 
-test('guarda credenciales derivadas y mantiene la sesión fuera de localStorage', async ({ page, context }) => {
+test('mantiene el token solo en sessionStorage y no guarda contraseñas ni cuentas en localStorage', async ({ page, context }) => {
   await logIn(page, 'admin');
   const storage = await page.evaluate(() => ({
     persistent: JSON.stringify(localStorage),
@@ -77,9 +60,11 @@ test('guarda credenciales derivadas y mantiene la sesión fuera de localStorage'
     sessionKeys: Object.keys(sessionStorage),
     persistentKeys: Object.keys(localStorage),
   }));
-  expect(storage.persistent).toContain('admin@tecpeopleflow.local');
-  expect(storage.persistent).not.toContain(demoPassword);
-  expect(storage.persistent).not.toContain('UsuarioDemo123!');
+  const [adminEmail, adminPassword] = credentials('admin');
+  expect(storage.persistent).not.toContain(adminEmail);
+  expect(storage.persistent).not.toContain(adminPassword);
+  expect(storage.session).not.toContain(adminPassword);
+  expect(storage.sessionKeys).toContain('tecpeopleflow.pocketbase.auth.v1');
   expect(storage.session).not.toBe('{}');
   expect(storage.sessionKeys.some((key) => storage.persistentKeys.includes(key))).toBe(false);
 
@@ -90,13 +75,14 @@ test('guarda credenciales derivadas y mantiene la sesión fuera de localStorage'
 });
 
 test('el administrador crea cuentas de ambos roles y evita correos duplicados', async ({ page }) => {
+  const suffix = `${Date.now()}-${test.info().retry}`;
   await logIn(page, 'admin');
   await page.getByRole('link', { name: 'Usuarios', exact: true }).click();
   await expect(page).toHaveURL(/#\/admin\/users$/);
   await expect(page.getByRole('heading', { name: 'Personas y accesos', exact: true })).toBeVisible();
 
   for (const role of ['user', 'admin'] as const) {
-    const email = `e2e.${role}@tecpeopleflow.local`;
+    const email = `e2e.${role}.${suffix}@example.test`;
     await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Crear usuario', exact: true });
     await expect(dialog).toBeVisible();
@@ -112,7 +98,7 @@ test('el administrador crea cuentas de ambos roles y evita correos duplicados', 
   await page.getByRole('button', { name: 'Crear usuario', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Crear usuario', exact: true });
   await dialog.getByLabel('Nombre completo', { exact: true }).fill('Correo repetido');
-  await dialog.getByLabel('Correo electrónico', { exact: true }).fill('e2e.user@tecpeopleflow.local');
+  await dialog.getByLabel('Correo electrónico', { exact: true }).fill(`e2e.user.${suffix}@example.test`);
   await dialog.getByLabel('Contraseña', { exact: true }).fill('UsuarioNuevo123!');
   await dialog.getByRole('button', { name: 'Crear usuario', exact: true }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
@@ -121,7 +107,7 @@ test('el administrador crea cuentas de ambos roles y evita correos duplicados', 
 
   for (const role of ['user', 'admin'] as const) {
     await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
-    await logInWithCredentials(page, `e2e.${role}@tecpeopleflow.local`, 'UsuarioNuevo123!');
+    await logInWithCredentials(page, `e2e.${role}.${suffix}@example.test`, 'UsuarioNuevo123!');
     if (role === 'admin') {
       await expect(page.getByRole('link', { name: 'Usuarios', exact: true })).toBeVisible();
     } else {
