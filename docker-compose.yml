@@ -68,12 +68,15 @@ services:
       retries: 30
 
   cert-init:
-    user: *host-user
+    user: "0:0"
     image: ${MPC_IMAGE:-proyecto-delta-mpc-party:local}
     build:
       context: ..
       dockerfile: proyecto-delta/docker/mp-spdz.Dockerfile
     command: ["/app/mpc/setup-dev-certs.sh", "/runtime"]
+    environment:
+      RUNTIME_UID: "${HOST_UID:-${SUDO_UID:-1000}}"
+      RUNTIME_GID: "${HOST_GID:-${SUDO_GID:-1000}}"
     volumes:
       - ./.runtime:/runtime
     restart: "no"

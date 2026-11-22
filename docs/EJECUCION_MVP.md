@@ -26,9 +26,11 @@ $env:HOST_GID="0"
 docker compose up --build -d --wait
 ```
 
-En Linux/macOS, definir `HOST_UID` y `HOST_GID` con el UID/GID del operador antes
-del mismo comando. La primera compilación de MP-SPDZ puede tardar. Para reutilizar
-imágenes ya construidas, usar `docker compose up -d --no-build --wait`.
+En Linux/macOS, `HOST_UID` y `HOST_GID` deben ser el UID/GID del operador (por
+defecto Compose usa `SUDO_UID`/`SUDO_GID` si se ejecuta con `sudo`).
+`cert-init` prepara `.runtime` y corrige automáticamente la propiedad de los
+certificados y directorios de logs. La primera compilación de MP-SPDZ puede tardar.
+Para reutilizar imágenes ya construidas, usar `docker compose up -d --no-build --wait`.
 `cert-init` debe terminar y Coordinator/parties/PocketBase deben estar saludables.
 
 | Servicio | URL local |

@@ -19,8 +19,30 @@ $env:HOST_GID="0"
 docker compose up --build -d --wait
 ```
 
-En Linux, definir `HOST_UID` y `HOST_GID` con el UID/GID del operador, que debe
-poder escribir en `.runtime/`. La primera compilación de MP-SPDZ puede tardar.
+En Linux, desde la raíz de `proyecto-delta`, ejecuta:
+
+```bash
+export HOST_UID="$(id -u)"
+export HOST_GID="$(id -g)"
+docker compose up --build -d --wait
+```
+
+Si Docker requiere privilegios de administrador, conserva esos valores al usar `sudo`:
+
+```bash
+sudo --preserve-env=HOST_UID,HOST_GID docker compose up --build -d --wait
+```
+
+Para comprobar el estado y detener los servicios:
+
+```bash
+docker compose ps
+docker compose down
+```
+
+El usuario necesita acceso a Docker y `MP-SPDZ/` debe estar junto a este repositorio.
+`cert-init` prepara `.runtime` y corrige automáticamente la propiedad de los
+certificados y directorios de logs. La primera compilación de MP-SPDZ puede tardar.
 El circuito actual usa ring de 64 bits y bloques de **262144** píxeles.
 No reutilizar un circuito histórico compilado para 4096.
 

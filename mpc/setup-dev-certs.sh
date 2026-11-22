@@ -2,7 +2,20 @@
 set -euo pipefail
 
 runtime_root="${1:-/runtime}"
+runtime_uid="${RUNTIME_UID:?RUNTIME_UID must be set}"
+runtime_gid="${RUNTIME_GID:?RUNTIME_GID must be set}"
 cert_dir="${runtime_root}/Player-Data"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "setup-dev-certs.sh must run as root to fix bind-mount ownership" >&2
+    exit 1
+fi
+
+if [[ ! "${runtime_uid}" =~ ^[0-9]+$ || ! "${runtime_gid}" =~ ^[0-9]+$ ]]; then
+    echo "RUNTIME_UID and RUNTIME_GID must be numeric" >&2
+    exit 1
+fi
+
 mkdir -p "${cert_dir}"
 
 complete=1
@@ -38,5 +51,14 @@ for party in 0 1 2; do
     cp "${cert_dir}"/*.pem "${isolated}/"
     cp "${cert_dir}/P${party}.key" "${cert_dir}/C0.key" "${isolated}/"
     c_rehash "${isolated}"
+    mkdir -p "${runtime_root}/logs/party-${party}"
 done
 touch "${runtime_root}/certificates.ready"
+
+chown "${runtime_uid}:${runtime_gid}" "${runtime_root}" "${runtime_root}/certificates.ready"
+for party in 0 1 2; do
+    chown -R "${runtime_uid}:${runtime_gid}" \
+        "${cert_dir}" \
+        "${runtime_root}/party-${party}" \
+        "${runtime_root}/logs/party-${party}"
+done
