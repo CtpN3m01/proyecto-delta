@@ -47,7 +47,9 @@ class PartyJobService:
         self._active: _PartyJob | None = None
         self._lock = RLock()
 
-    async def prepare(self, video_id: UUID, metadata: dict[str, Any]) -> dict[str, Any]:
+    async def prepare(
+        self, video_id: UUID, metadata: dict[str, Any], program: str | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             if self._active is not None and self._active.video_id != video_id:
                 raise PartyJobConflictError(
@@ -55,7 +57,7 @@ class PartyJobService:
                 )
         # El accept de ExternalIO tiene timeout. El Node Agent vuelve a iniciar
         # el runtime al preparar cada job si este quedo inactivo entre jobs.
-        self.runtime.start()
+        self.runtime.start(program)
         self.runtime.require_running()
         with self._lock:
             if self._active is not None and self._active.video_id != video_id:
@@ -111,6 +113,13 @@ class PartyJobService:
             self._active = None
             self.runtime.stop()
             return response
+
+    def reset(self) -> None:
+        """Descarta cualquier job previo (p. ej. tras reiniciar el coordinator)."""
+
+        with self._lock:
+            self._active = None
+            self.runtime.stop()
 
     def get(self, video_id: UUID) -> dict[str, Any]:
         with self._lock:

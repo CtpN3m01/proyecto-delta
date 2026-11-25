@@ -16,6 +16,10 @@ results/
 # Shares producidos en ejecución; las carpetas se conservan con .gitkeep.
 data/parties/*/*.share
 data/parties/*/*.tmp
+data/parties/*/uploads/
+# Historial/cola del coordinator (SQLite local).
+data/coordinator/*
+!data/coordinator/.gitkeep
 # Reproducible browser assets (same source weights and local WASM runtimes).
 frontend/public/models/
 frontend/public/vendor/

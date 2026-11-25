@@ -1,0 +1,88 @@
+"""Anonimización MPC en segundo plano, sin el navegador conectado.
+
+El navegador solo detecta regiones y reparte cada píxel en tres shares
+aditivos módulo 256: s0 + s1 + s2 = x (mod 256). Cada Node Agent aporta SU
+share como cliente ExternalIO con un id fijo (0, 1, 2); ninguno ve x.
+
+    cliente 0 -> máscara pública + share s0   (party 0)
+    cliente 1 -> share s1                     (party 1)
+    cliente 2 -> share s2                     (party 2)
+    cliente 3 <- resultado (result-storage)
+
+Dentro de MP-SPDZ: z = (s0 + s1 + s2) * (1 - máscara), en Z(2^64).
+Como el cálculo es lineal con máscara pública, z mod 256 es el píxel
+anonimizado. En píxeles ocultos z = 0; en los visibles z = x + 256k con
+k en {0, 1, 2}, de modo que el receptor no aprende nada que no publique ya.
+
+Un runtime atiende un único video y termina; el Node Agent lo reinicia.
+"""
+
+from Compiler.instructions import closeclientconnection
+from Compiler.library import (
+    accept_client_connection,
+    do_while,
+    listen_for_clients,
+    runtime_error_if,
+)
+from Compiler.types import MemValue, cint, regint, sint
+
+
+CLIENT_PORT_BASE = 14000
+# Debe coincidir con MPC_CHUNK_SIZE de src/mpc/offline_protocol.py.
+CHUNK_SIZE = int(program.args[1]) if len(program.args) > 1 else 262144
+MAX_PAYLOAD_SIZE = (1 << 63) - CHUNK_SIZE
+OFFLINE_MAGIC = 0x444C5446  # DLTF; público.
+OFFLINE_VERSION = 1
+INPUT_CLIENTS = (0, 1, 2)
+OUTPUT_CLIENT = 3
+CLIENTS = INPUT_CLIENTS + (OUTPUT_CLIENT,)
+
+program.active = False
+
+listen_for_clients(CLIENT_PORT_BASE)
+# El id de cada cliente lo fija su certificado C<id>; el orden de llegada no importa.
+for _ in CLIENTS:
+    accept_client_connection(CLIENT_PORT_BASE)
+
+headers = [regint.read_from_socket(regint(client), 2) for client in CLIENTS]
+payload_size = headers[0][0]
+number_chunks = headers[0][1]
+for header in headers[1:]:
+    runtime_error_if(
+        (header[0] != payload_size) + (header[1] != number_chunks),
+        'Los clientes declararon perfiles distintos',
+    )
+runtime_error_if(
+    (payload_size <= 0) + (payload_size > MAX_PAYLOAD_SIZE),
+    'Longitud de video fuera del perfil MPC',
+)
+runtime_error_if(
+    number_chunks != (payload_size + CHUNK_SIZE - 1) // CHUNK_SIZE,
+    'Cantidad de bloques incompatible con longitud',
+)
+for client in CLIENTS:
+    regint.write_to_socket(
+        regint(client), [regint(OFFLINE_MAGIC), regint(OFFLINE_VERSION)]
+    )
+
+processed_chunks = MemValue(regint(0))
+
+
+@do_while
+def process_chunk():
+    mask = regint.read_from_socket(regint(0), size=CHUNK_SIZE)
+    runtime_error_if(
+        sint((mask < 0) + (mask > 1)).sum().reveal(),
+        'La mascara publica debe contener solamente 0 y 1',
+    )
+    total = sint.receive_from_client(1, regint(0), size=CHUNK_SIZE)[0]
+    for client in INPUT_CLIENTS[1:]:
+        total = total + sint.receive_from_client(1, regint(client), size=CHUNK_SIZE)[0]
+    processed = total * (1 - cint(mask))
+    sint.reveal_to_clients([regint(OUTPUT_CLIENT)], [processed])
+    processed_chunks.iadd(1)
+    return processed_chunks < number_chunks
+
+
+for client in CLIENTS:
+    closeclientconnection(regint(client))

@@ -84,7 +84,9 @@ class VideoService:
         self._active_job_id: UUID | None = None
         self._lock = RLock()
 
-    def register_video(self, filename: str, video_format: str) -> VideoRegistrationResponse:
+    def register_video(
+        self, filename: str, video_format: str, video_id: UUID | None = None
+    ) -> VideoRegistrationResponse:
         normalized_filename = filename.strip()
         normalized_format = video_format.strip().lower().lstrip(".")
         if not normalized_filename:
@@ -98,7 +100,7 @@ class VideoService:
                     f"El job {self._active_job_id} sigue activo; complételo y límpielo"
                 )
             job = _VideoJob(
-                id=uuid4(),
+                id=video_id or uuid4(),
                 filename=normalized_filename,
                 format=normalized_format,
                 status=VideoStatus.REGISTERED,

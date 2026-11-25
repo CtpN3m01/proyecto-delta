@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 import asyncio
 from contextlib import asynccontextmanager
-from coordinator.api.browser_jobs import router as browser_router, queue
+from coordinator.api.browser_jobs import background, get_service, router as browser_router
 from mpc.web_origins import add_web_cors
 
 from coordinator.api.videos import router as videos_router
@@ -11,15 +11,8 @@ from coordinator.api.videos import router as videos_router
 
 @asynccontextmanager
 async def lifespan(app):
-    async def sweep():
-        while True:
-            await asyncio.sleep(5)
-            try:
-                await queue.expire()
-            except Exception:
-                # Failed node cleanup is retried; the active lease stays held.
-                pass
-    task = asyncio.create_task(sweep())
+    # La cola MPC vive en el coordinator: sigue avanzando sin navegadores.
+    task = asyncio.create_task(background(get_service()))
     try:
         yield
     finally:

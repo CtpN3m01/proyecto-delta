@@ -1,106 +1,88 @@
-import { BrowserMpc, CHUNK_SIZE } from './external-io';
 import { BrowserModels } from './models';
 import { makeMask, VideoCounter } from './geometry';
 import { openVideo, LocalVideo, grayscale } from './video';
+import { frameBody, gzip, importShareKey, keystream, KEY_SIZE, partyZeroShare, toBase64 } from './shares';
 
-type Settings = { coordinatorUrl: string; partyUrls: string[]; storageUrl: string };
-let ticket: string | undefined;
+/**
+ * Parte del navegador: detectar regiones y repartir cada cuadro en tres
+ * shares. Al terminar, el MPC continúa en el servidor y la pestaña puede
+ * cerrarse. Los píxeles originales nunca salen de este worker en claro.
+ */
+type Settings = { coordinatorUrl: string; partyUrls: string[]; token: string };
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 const progress = (stage: number, message: string, extra = {}) => postMessage({ type: 'progress', stage, message, ...extra });
 
 async function run(file: File, settings: Settings) {
-  const local = new LocalVideo(), mpc = new BrowserMpc(), counter = new VideoCounter();
-  let models: BrowserModels | undefined, encoder: Awaited<ReturnType<LocalVideo['encoder']>> | undefined;
+  const local = new LocalVideo(), counter = new VideoCounter();
+  let models: BrowserModels | undefined, ticket: string | undefined, handedOff = false;
   let heartbeatError: Error | undefined;
   const api = async (path: string, method = 'GET', body?: unknown) => {
-    const response = await fetch(`${settings.coordinatorUrl}/api/v1/browser-jobs${path}`, { method, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
+    const response = await fetch(`${settings.coordinatorUrl}/api/v1/browser-jobs${path}`, {
+      method, headers: { Authorization: settings.token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000),
+    });
+    if (response.status === 401) throw new Error('Tu sesión venció. Inicia sesión de nuevo.');
     if (!response.ok) throw new Error(`Coordinator: HTTP ${response.status}.`);
     return response.json();
+  };
+  const party = async (index: number, path: string, body: BodyInit, contentType: string) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetch(`${settings.partyUrls[index]}/api/v1/uploads/${ticket}${path}`, { method: 'POST', headers: { 'Content-Type': contentType }, body, signal: AbortSignal.timeout(60_000) });
+        if (response.ok) return;
+        if (response.status < 500 || attempt >= 2) throw new Error(`La party ${index} rechazó los shares (HTTP ${response.status}).`);
+      } catch (e) {
+        if (attempt >= 2 || (e instanceof Error && e.message.startsWith('La party'))) throw e;
+      }
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
   };
   try {
     progress(0, 'Leyendo el video en este navegador.');
     const video = await openVideo(file);
-    const job = await api('', 'POST', { filename: file.name, format: 'mp4' });
+    const { width, height, frame_count } = video.metadata;
+    const job = await api('', 'POST', { filename: file.name, format: 'mp4', metadata: video.metadata });
     ticket = job.id;
     postMessage({ type: 'ticket', id: ticket });
-    heartbeat = setInterval(() => { void api(`/${ticket}`).then(state => { if (state.status === 'FAILED') throw new Error('El trabajo fue abortado.'); }).catch(e => { heartbeatError = e; mpc.close(); }); }, 10_000);
-    let state = job;
-    while (state.status === 'QUEUED') {
-      progress(0, `Esperando turno. Posición en la cola: ${state.position}.`);
-      await new Promise(r => setTimeout(r, 1000));
-      state = await api(`/${ticket}`);
-    }
-    if (state.status !== 'READY') throw new Error('El turno de procesamiento no está disponible.');
-    progress(1, 'Preparando los tres modelos en este navegador.');
+    heartbeat = setInterval(() => {
+      void api(`/${ticket}`).then(state => { if (state.status !== 'UPLOADING') heartbeatError = new Error('El video fue cancelado.'); }).catch(e => { heartbeatError = e; });
+    }, 10_000);
+
+    // Claves de las parties 1 y 2: con ellas regeneran su share sin recibirlo.
+    const raw = [crypto.getRandomValues(new Uint8Array(KEY_SIZE)), crypto.getRandomValues(new Uint8Array(KEY_SIZE))];
+    const keys = await Promise.all(raw.map(importShareKey));
+    await Promise.all(raw.map((k, i) => party(i + 1, '/key', JSON.stringify({ key: toBase64(k) }), 'application/json')));
+    raw.forEach(k => k.fill(0));
+
+    progress(1, 'Preparando los modelos de detección en este navegador.');
     models = await BrowserModels.load();
-    const { width, height, fps, frame_count } = video.metadata;
-    encoder = await local.encoder(width, height, fps);
-    // Decoder is opened lazily. Prepare all runtimes only once per video.
-    state = await api(`/${ticket}/start`, 'POST', { metadata: video.metadata });
-    await mpc.connect(settings.partyUrls, state.video_id, width * height * frame_count);
-    let pendingPixels = new Uint8Array(CHUNK_SIZE), pendingMask = new Uint8Array(CHUNK_SIZE), filled = 0;
-    const returned: Uint8Array[] = [];
-    let resultSize = 0, index = 0, encoded = 0, faceCount = 0, plateCount = 0;
-    const started = performance.now();
-    let detectionMs = 0, exchangeMs = 0;
-    const consume = async (length: number) => {
-      const exchangeStarted = performance.now();
-      const output = await mpc.exchange(pendingPixels.slice(0, length), pendingMask.slice(0, length));
-      exchangeMs += performance.now() - exchangeStarted;
-      returned.push(output); resultSize += output.length;
-      while (resultSize >= width * height) {
-        const frame = new Uint8Array(width * height);
-        let copied = 0;
-        while (copied < frame.length) {
-          const head = returned[0], n = Math.min(head.length, frame.length - copied);
-          frame.set(head.subarray(0, n), copied); copied += n;
-          if (n === head.length) returned.shift(); else returned[0] = head.slice(n);
-        }
-        resultSize -= frame.length;
-        await encoder!.add(frame, encoded++);
-      }
-      filled = 0; pendingPixels = new Uint8Array(CHUNK_SIZE); pendingMask = new Uint8Array(CHUNK_SIZE);
-    };
+    let index = 0, faceCount = 0, plateCount = 0, upload: Promise<void> = Promise.resolve();
     for await (const image of local.frames(video)) {
       if (heartbeatError) throw heartbeatError;
-      const detectionStarted = performance.now();
       const detections = await models.detect(image);
-      detectionMs += performance.now() - detectionStarted;
       faceCount += detections.faces.length; plateCount += detections.plates.length;
       counter.update(detections.objects, index);
       const pixels = grayscale(image, width, height), mask = makeMask(detections.regions, image.width, image.height, width, height);
-      let offset = 0;
-      while (offset < pixels.length) {
-        const n = Math.min(CHUNK_SIZE - filled, pixels.length - offset);
-        pendingPixels.set(pixels.subarray(offset, offset + n), filled); pendingMask.set(mask.subarray(offset, offset + n), filled);
-        filled += n; offset += n;
-        if (filled === CHUNK_SIZE) await consume(filled);
-      }
+      const [s1, s2] = await Promise.all(keys.map(k => keystream(k, index, pixels.length)));
+      const body = frameBody(await gzip(mask), partyZeroShare(pixels, s1, s2));
+      await upload; // un cuadro en vuelo mientras se detecta el siguiente
+      const frame = index;
+      upload = party(0, `/frames/${frame}`, body, 'application/octet-stream');
       index++;
-      progress(2, `Procesando cuadro ${index} de ${frame_count}.`, { counts: counter.summary(), frame: index, totalFrames: frame_count, faceCount, plateCount });
+      progress(1, `Detectando y protegiendo cuadro ${index} de ${frame_count}.`, { counts: counter.summary(), frame: index, totalFrames: frame_count, faceCount, plateCount });
     }
-    if (filled) await consume(filled);
-    mpc.finish();
-    if (index !== frame_count || encoded !== frame_count || resultSize) throw new Error('La secuencia de salida está incompleta.');
-    progress(3, 'Guardando el video anonimizado.');
-    const result = await encoder.finish();
-    await api(`/${ticket}/storing`, 'POST');
-    const form = new FormData(); form.append('video', result, 'video-anonimizado.mp4'); form.append('counts', JSON.stringify(counter.summary()));
-    const response = await fetch(`${settings.storageUrl}/api/v1/results`, { method: 'POST', body: form });
-    if (!response.ok) throw new Error(`No se pudo guardar el resultado (HTTP ${response.status}).`);
-    const stored = await response.json();
-    await api(`/${ticket}/complete`, 'POST');
-    const published = await fetch(`${settings.storageUrl}/api/v1/results/${stored.id}/publish`, { method: 'POST' });
-    if (!published.ok) throw new Error('El resultado se recibió, pero no se pudo publicar en el catálogo.');
-    const timings = { detection_seconds: detectionMs / 1000, exchange_seconds: exchangeMs / 1000, processing_seconds: (performance.now() - started) / 1000 };
-    postMessage({ type: 'complete', counts: counter.summary(), resultId: stored.id, faceCount, plateCount, metadata: video.metadata, timings,
-      logs: [`Cuadros validados antes del códec: ${encoded}/${frame_count}.`, `Detecciones de rostros: ${faceCount}; placas: ${plateCount}.`, `Inferencia: ${timings.detection_seconds.toFixed(1)} s; intercambio MPC: ${timings.exchange_seconds.toFixed(1)} s.`, `Resultado almacenado: ${stored.id}.`] });
+    await upload;
+    if (index !== frame_count) throw new Error('La secuencia de cuadros está incompleta.');
+    const queued = await api(`/${ticket}/uploaded`, 'POST', { counts: counter.summary() });
+    handedOff = true;
+    postMessage({ type: 'handoff', id: ticket, status: queued.status, position: queued.position, counts: counter.summary(), faceCount, plateCount,
+      logs: [`Cuadros analizados en el navegador: ${index}/${frame_count}.`, `Detecciones de rostros: ${faceCount}; placas: ${plateCount}.`, 'Shares entregados a las tres parties; el MPC continúa en el servidor.'] });
   } catch (e) {
-    if (ticket) await api(`/${ticket}`, 'DELETE').catch(() => {});
+    if (ticket && !handedOff) await api(`/${ticket}`, 'DELETE').catch(() => {});
     postMessage({ type: 'error', message: e instanceof Error ? e.message : String(e) });
   } finally {
     if (heartbeat) clearInterval(heartbeat);
-    mpc.close(); encoder?.close(); local.close(); await models?.close();
+    local.close(); await models?.close();
   }
 }
 self.onmessage = event => { void run(event.data.file, event.data.settings); };
