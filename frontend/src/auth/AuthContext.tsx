@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { pocketbaseAuth } from '../services/pocketbase-auth';
+import { processingSession } from '../browser/processing-session';
 import type { CreateUserInput, AppUser } from '../types';
 
 interface AuthState {
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshUsers]);
 
   const logout = useCallback(() => {
+    processingSession.reset(); // sin sesión no se puede seguir subiendo shares
     pocketbaseAuth.logout();
     setUser(null);
     setUsers([]);

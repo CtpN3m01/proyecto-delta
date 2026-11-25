@@ -8,4 +8,4 @@ def web_origins():
 
 
 def add_web_cors(app):
-    app.add_middleware(CORSMiddleware, allow_origins=web_origins(), allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"], expose_headers=["Content-Disposition"])
+    app.add_middleware(CORSMiddleware, allow_origins=web_origins(), allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Disposition"])

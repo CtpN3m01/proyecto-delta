@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 test.use({ trace: 'off' });
 test('T49 three independent party channels, consecutive chunks, padding and masked inputs', async ({ page }) => {
+  // Transporte interactivo anterior (navegador conectado al MPC). La web usa
+  // ahora el MPC en segundo plano; se conserva solo como prueba histórica.
   test.skip(process.env.RUN_T49_TRANSPORT !== '1');
   test.setTimeout(21_600_000);
   await page.goto('/catalog.html');

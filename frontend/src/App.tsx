@@ -4,6 +4,7 @@ import { useAuth } from './auth/AuthContext';
 import { AppLayout } from './components/AppLayout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
+import HistoryPage from './pages/HistoryPage';
 import UsersPage from './pages/UsersPage';
 
 export default function App() {
@@ -14,6 +15,7 @@ export default function App() {
     <Route path="/login" element={<LoginPage />} />
     <Route element={<AppLayout />}>
       <Route path="/dashboard" element={<DashboardPage />} />
+      <Route path="/historial" element={<HistoryPage />} />
       <Route path="/admin/users" element={user?.role === 'admin' ? <UsersPage users={users} onCreateUser={createUser} /> : <Navigate to={user ? '/dashboard' : '/login'} replace />} />
     </Route>
     <Route path="*" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />

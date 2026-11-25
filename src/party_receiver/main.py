@@ -7,9 +7,12 @@ from fastapi import FastAPI
 
 from party_receiver.api.jobs import router as jobs_router
 from party_receiver.api.browser import router as browser_router
+from party_receiver.api.uploads import router as uploads_router
 from mpc.web_origins import add_web_cors
 from party_receiver.runtime import MpcRuntimeManager
+from party_receiver.services.feeder import ShareFeeder
 from party_receiver.services.job_service import PartyJobService
+from party_receiver.services.upload_store import UploadStore
 
 
 def _party_id_from_environment() -> int:
@@ -53,7 +56,10 @@ def create_app(runtime_manager: MpcRuntimeManager | None = None) -> FastAPI:
         runtime=runtime,
         coordinator_url=coordinator_url,
     )
+    application.state.upload_store = UploadStore(party_id)
+    application.state.feeder = ShareFeeder(party_id, application.state.upload_store)
     application.include_router(jobs_router)
+    application.include_router(uploads_router)
     application.include_router(browser_router)
     add_web_cors(application)
 

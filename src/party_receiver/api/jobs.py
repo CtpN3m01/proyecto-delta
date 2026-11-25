@@ -41,6 +41,7 @@ class JobMetadata(BaseModel):
 
 class PrepareJobRequest(BaseModel):
     metadata: JobMetadata
+    program: Literal["delta_video_anonymize", "delta_video_offline"] | None = None
 
 
 class FailJobRequest(BaseModel):
@@ -53,6 +54,7 @@ class PartyJobResponse(BaseModel):
     status: Literal["READY", "PROCESSING", "COMPLETED", "FAILED", "CLEANED"]
     runtime: str
     error: str | None = None
+    feed: dict[str, Any] | None = None
 
 
 def get_job_service(request: Request) -> PartyJobService:
@@ -69,15 +71,57 @@ def _http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _with_feed(request: Request, video_id: UUID, response: dict[str, Any]) -> dict[str, Any]:
+    state = request.app.state.feeder.get(video_id)
+    if state is not None:
+        response["feed"] = {
+            "status": state.status,
+            "chunks": state.chunks,
+            "total_chunks": state.total_chunks,
+            "error": state.error,
+        }
+    return response
+
+
+@router.post("/reset", status_code=204)
+async def reset_jobs(
+    service: Annotated[PartyJobService, Depends(get_job_service)],
+) -> None:
+    service.reset()
+
+
 @router.get("/{video_id}", response_model=PartyJobResponse)
 async def get_job(
     video_id: UUID,
+    request: Request,
     service: Annotated[PartyJobService, Depends(get_job_service)],
 ) -> dict[str, Any]:
     try:
-        return service.get(video_id)
+        return _with_feed(request, video_id, service.get(video_id))
     except PartyJobNotFoundError as exc:
         raise _http_error(exc) from exc
+
+
+@router.post("/{video_id}/feed", response_model=PartyJobResponse)
+async def feed_job(
+    video_id: UUID,
+    request: Request,
+    service: Annotated[PartyJobService, Depends(get_job_service)],
+) -> dict[str, Any]:
+    """Aporta el share almacenado de esta party al programa offline."""
+
+    try:
+        job = service.get(video_id)
+        if job["status"] != "PROCESSING":
+            raise PartyJobConflictError("El job debe estar PROCESSING")
+        request.app.state.feeder.start(video_id)
+        return _with_feed(request, video_id, job)
+    except (PartyJobNotFoundError, PartyJobConflictError) as exc:
+        raise _http_error(exc) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="No hay shares para este job") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{video_id}/prepare", response_model=PartyJobResponse)
@@ -87,7 +131,9 @@ async def prepare_job(
     service: Annotated[PartyJobService, Depends(get_job_service)],
 ) -> dict[str, Any]:
     try:
-        return await service.prepare(video_id, payload.metadata.model_dump())
+        return await service.prepare(
+            video_id, payload.metadata.model_dump(), payload.program
+        )
     except (
         PartyJobConflictError,
         MpcRuntimeError,
@@ -133,9 +179,12 @@ async def fail_job(
 @router.post("/{video_id}/cleanup", response_model=PartyJobResponse)
 async def cleanup_job(
     video_id: UUID,
+    request: Request,
     service: Annotated[PartyJobService, Depends(get_job_service)],
 ) -> dict[str, Any]:
     try:
-        return service.cleanup(video_id)
+        response = service.cleanup(video_id)
+        request.app.state.feeder.forget(video_id)
+        return response
     except (PartyJobNotFoundError, PartyJobConflictError) as exc:
         raise _http_error(exc) from exc

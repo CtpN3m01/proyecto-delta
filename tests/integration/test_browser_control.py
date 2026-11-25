@@ -1,74 +1,15 @@
 import asyncio
 import struct
-import time
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
-from coordinator.api import browser_jobs as browser
-from coordinator.services.video_service import VideoService
-from coordinator.main import app
 from party_receiver.api.browser import read_packet, MAX_MESSAGE, external_io
 from fastapi import WebSocketDisconnect
 from result_storage.main import create_app
-
-
-@pytest.fixture
-def control(monkeypatch):
-    service = VideoService(["http://p0", "http://p1", "http://p2"])
-    monkeypatch.setattr(browser, "video_service", service)
-    queue = browser.BrowserQueue()
-    queue.nodes_call = AsyncMock()
-    monkeypatch.setattr(browser, "queue", queue)
-    with TestClient(app) as client:
-        yield client, queue, service
-
-
-def enqueue(client, name="video.mp4"):
-    response = client.post("/api/v1/browser-jobs", json={"filename": name, "format": "mp4"})
-    assert response.status_code == 202
-    return response.json()
-
-
-def test_global_fifo_and_abort(control):
-    client, queue, _ = control
-    first, second, third = enqueue(client), enqueue(client), enqueue(client)
-    assert first["status"] == "READY"
-    assert second["position"] == 1 and third["position"] == 2
-    assert client.post(f"/api/v1/browser-jobs/{second['id']}/start", json={"metadata": {"width": 2, "height": 2, "fps": 30, "frame_count": 1}}).status_code == 409
-    assert client.delete(f"/api/v1/browser-jobs/{first['id']}").status_code == 200
-    assert client.get(f"/api/v1/browser-jobs/{second['id']}").json()["status"] == "READY"
-    assert queue.nodes_call.await_args_list[0].args[1] == "fail"
-    assert queue.nodes_call.await_args_list[1].args[1] == "cleanup"
-
-
-def test_cleanup_failure_holds_lease_and_retries(control):
-    client, queue, _ = control
-    first, second = enqueue(client), enqueue(client)
-    queue.nodes_call.side_effect = [None, RuntimeError("node unavailable"), None, None]
-    with pytest.raises(RuntimeError):
-        client.delete(f"/api/v1/browser-jobs/{first['id']}")
-    assert queue.active == browser.UUID(first["id"])
-    assert client.get(f"/api/v1/browser-jobs/{second['id']}").json()["status"] == "QUEUED"
-    assert client.delete(f"/api/v1/browser-jobs/{first['id']}").status_code == 200
-    assert client.get(f"/api/v1/browser-jobs/{second['id']}").json()["status"] == "READY"
-
-
-def test_expired_tab_releases_queue(control):
-    client, queue, _ = control
-    first, second = enqueue(client), enqueue(client)
-    queue.jobs[browser.UUID(first["id"])].touched = time.monotonic() - 100
-    asyncio.run(queue.expire())
-    assert client.get(f"/api/v1/browser-jobs/{first['id']}").json()["status"] == "FAILED"
-    assert client.get(f"/api/v1/browser-jobs/{second['id']}").json()["status"] == "READY"
-
-
-def test_control_rejects_original_upload(control):
-    client, _, _ = control
-    assert client.post("/api/v1/browser-jobs", files={"video": ("source.mp4", b"original", "video/mp4")}).status_code == 422
-    assert client.post("/api/v1/browser-jobs", json={"filename": "   ", "format": "mp4"}).status_code == 422
 
 
 def test_storage_atomic_publication_and_restart(tmp_path):
@@ -113,5 +54,5 @@ def test_adapter_disconnect_during_accept_does_not_keep_party_busy():
         headers={"origin": "http://localhost:8080"}, app=SimpleNamespace(state=state),
         accept=AsyncMock(side_effect=WebSocketDisconnect()), close=AsyncMock(side_effect=WebSocketDisconnect()),
     )
-    asyncio.run(external_io(websocket, browser.uuid4()))
+    asyncio.run(external_io(websocket, uuid4()))
     assert state.browser_connected is False

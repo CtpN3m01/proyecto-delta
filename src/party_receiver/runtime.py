@@ -43,6 +43,7 @@ class MpcRuntimeManager:
             hosts_file or os.getenv("MPC_HOSTS_FILE", "/app/mpc/hosts-docker")
         )
         self.program = program or os.getenv("MPC_PROGRAM", "delta_video_anonymize")
+        self._running_program: str | None = None
         self.startup_grace = startup_grace
         self._process: subprocess.Popen[bytes] | None = None
         self._log_handle: BinaryIO | None = None
@@ -57,12 +58,17 @@ class MpcRuntimeManager:
         configured = Path(os.getenv("MPC_LOG_DIR", "/tmp/proyecto-delta"))
         return configured / f"party-{self.party_id}.log"
 
-    def start(self) -> None:
+    def start(self, program: str | None = None) -> None:
+        """Inicia el runtime; si corre otro programa, lo reinicia con el pedido."""
+
         if not self.enabled:
             return
+        requested = program or self.program
         with self._lock:
             if self._process is not None and self._process.poll() is None:
-                return
+                if self._running_program == requested:
+                    return
+                self.stop()
             # ExternalIO finaliza el proceso si pasa su timeout sin clientes.
             # Un prepare posterior debe poder crear un proceso limpio de nuevo.
             self._process = None
@@ -73,7 +79,7 @@ class MpcRuntimeManager:
                 raise MpcRuntimeError(f"No existe el runtime MP-SPDZ: {self.binary}")
             if not self.hosts_file.is_file():
                 raise MpcRuntimeError(f"No existe el archivo de hosts: {self.hosts_file}")
-            schedule = self.root / "Programs" / "Schedules" / f"{self.program}.sch"
+            schedule = self.root / "Programs" / "Schedules" / f"{requested}.sch"
             if not schedule.is_file():
                 raise MpcRuntimeError(f"No existe el programa compilado: {schedule}")
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +87,7 @@ class MpcRuntimeManager:
             command = [
                 str(self.binary),
                 str(self.party_id),
-                self.program,
+                requested,
                 "-ip",
                 str(self.hosts_file),
             ]
@@ -92,6 +98,7 @@ class MpcRuntimeManager:
                 stdout=self._log_handle,
                 stderr=subprocess.STDOUT,
             )
+            self._running_program = requested
 
         deadline = time.monotonic() + self.startup_grace
         while time.monotonic() < deadline:

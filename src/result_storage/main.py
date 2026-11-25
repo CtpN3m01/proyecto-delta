@@ -13,10 +13,17 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from mpc.web_origins import add_web_cors
+from result_storage.collector import ResultCollector, as_dict
 
 
-def create_app(root=None):
+class CollectRequest(BaseModel):
+    metadata: dict
+    counts: dict = Field(default_factory=dict)
+
+
+def create_app(root=None, collector_factory=ResultCollector):
     root = Path(root or os.getenv("DELTA_STORAGE_DIR", "data/results"))
     root.mkdir(parents=True, exist_ok=True)
 
@@ -31,6 +38,50 @@ def create_app(root=None):
             db.execute("ALTER TABLE results ADD COLUMN published INTEGER NOT NULL DEFAULT 1")
     app = FastAPI(title="Delta anonymized results", version="1.0")
     add_web_cors(app)
+
+    def store_collected(path: Path, counts: dict) -> str:
+        """Publica un resultado reconstruido por el colector MPC."""
+        result_id = str(uuid4())
+        digest, size = hashlib.sha256(), 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        if size == 0:
+            raise RuntimeError("Resultado vacío")
+        os.replace(path, root / f"{result_id}.mp4")
+        with connect() as db:
+            db.execute("INSERT INTO results(id,filename,size,sha256,counts,published) VALUES(?,?,?,?,?,1)",
+                       (result_id, "video-anonimizado.mp4", size, digest.hexdigest(), json.dumps(counts)))
+        return result_id
+
+    collector = collector_factory(root, store_collected)
+    app.state.collector = collector
+
+    # Endpoints internos: solo el coordinator los usa (red de Docker).
+    @app.post("/api/v1/internal/collect/{video_id}", status_code=202)
+    def start_collect(video_id: UUID, payload: CollectRequest):
+        metadata = payload.metadata
+        try:
+            width, height, frames, fps = (int(metadata["width"]), int(metadata["height"]),
+                                          int(metadata["frame_count"]), float(metadata["fps"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(422, "Metadata inválida") from exc
+        if min(width, height, frames) < 1 or not 0 < fps <= 30 or len(json.dumps(payload.counts)) > 4096:
+            raise HTTPException(422, "Metadata inválida")
+        state = collector.start(video_id, {"width": width, "height": height, "frame_count": frames, "fps": fps}, payload.counts)
+        return as_dict(state)
+
+    @app.get("/api/v1/internal/collect/{video_id}")
+    def collect_status(video_id: UUID):
+        state = collector.get(video_id)
+        if state is None:
+            raise HTTPException(404, "Recolección no encontrada")
+        return as_dict(state)
+
+    @app.delete("/api/v1/internal/collect/{video_id}", status_code=204)
+    def forget_collect(video_id: UUID):
+        collector.forget(video_id)
 
     @app.get("/health")
     def health():

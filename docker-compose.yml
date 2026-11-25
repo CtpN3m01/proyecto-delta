@@ -18,6 +18,11 @@ x-mpc-party: &mpc-party
     MPC_HOSTS_FILE: /app/mpc/hosts-docker
     MPC_PROGRAM: ${MPC_PROGRAM:-delta_video_anonymize}
     MPC_LOG_DIR: /tmp/proyecto-delta
+    # MPC en segundo plano: cada Node Agent aporta su share como cliente C<id>.
+    MPC_PARTY_HOSTS: party-0,party-1,party-2
+    MPC_CLIENT_PORT_BASE: "14000"
+    MPC_CERT_DIR: /opt/MP-SPDZ/Player-Data
+    PARTY_UPLOAD_DIR: /data/party
     MPC_MAX_WIDTH: ${MPC_MAX_WIDTH:-1920}
     MPC_MAX_HEIGHT: ${MPC_MAX_HEIGHT:-}
     DELTA_WEB_ORIGINS: ${DELTA_WEB_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081}
@@ -48,7 +53,16 @@ services:
     build:
       context: .
     command: uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+    volumes:
+      # Historial y cola MPC persistentes (sobreviven a reinicios).
+      - ./data/coordinator:/data/coordinator
     environment:
+      POCKETBASE_URL: http://pocketbase:8090
+      DELTA_COORDINATOR_DB: /data/coordinator/jobs.sqlite3
+      STORAGE_INTERNAL_URL: http://result-storage:8000
       PARTY_URLS: ${PARTY_URLS:-http://localhost:8100,http://localhost:8101,http://localhost:8102}
       PARTY_CONTROL_URLS: http://party-0:8000,http://party-1:8000,http://party-2:8000
       DELTA_WEB_ORIGINS: ${DELTA_WEB_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081}
@@ -92,6 +106,7 @@ services:
     volumes:
       - ./.runtime/party-0/Player-Data:/opt/MP-SPDZ/Player-Data:ro
       - ./.runtime/logs/party-0:/tmp/proyecto-delta
+      - ./data/parties/party-0:/data/party
     healthcheck: &party-healthcheck
       test:
         - CMD
@@ -113,6 +128,7 @@ services:
     volumes:
       - ./.runtime/party-1/Player-Data:/opt/MP-SPDZ/Player-Data:ro
       - ./.runtime/logs/party-1:/tmp/proyecto-delta
+      - ./data/parties/party-1:/data/party
     healthcheck: *party-healthcheck
 
   party-2:
@@ -126,18 +142,27 @@ services:
     volumes:
       - ./.runtime/party-2/Player-Data:/opt/MP-SPDZ/Player-Data:ro
       - ./.runtime/logs/party-2:/tmp/proyecto-delta
+      - ./data/parties/party-2:/data/party
     healthcheck: *party-healthcheck
 
   result-storage:
     build: .
     command: uvicorn result_storage.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
     environment:
       DELTA_STORAGE_DIR: /data/results
+      # Cliente ExternalIO C3: recibe solo el video ya anonimizado.
+      MPC_PARTY_HOSTS: party-0,party-1,party-2
+      MPC_CLIENT_PORT_BASE: "14000"
+      MPC_CERT_DIR: /certs/Player-Data
       DELTA_WEB_ORIGINS: ${DELTA_WEB_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081}
     ports:
       - "8200:8000"
     volumes:
       - delta-results:/data/results
+      - ./.runtime/collector/Player-Data:/certs/Player-Data:ro
 
   processing-web:
     image: proyecto-delta-web:local

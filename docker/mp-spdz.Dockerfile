@@ -39,6 +39,8 @@ COPY proyecto-delta/mpc/Programs/Source/delta_video_anonymize.mpc \
     Programs/Source/delta_video_anonymize.mpc
 RUN python3 ./compile.py -M -R 64 delta_video_identity
 RUN python3 ./compile.py -M -R 64 delta_video_anonymize
+COPY proyecto-delta/mpc/Programs/Source/delta_video_offline.mpc     Programs/Source/delta_video_offline.mpc
+RUN python3 ./compile.py -M -R 64 delta_video_offline
 
 WORKDIR /app
 COPY proyecto-delta/requirements.txt ./
