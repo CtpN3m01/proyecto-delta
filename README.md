@@ -1,4 +1,4 @@
-﻿# Proyecto Delta — cliente web y MPC (T49)
+﻿# Proyecto Delta — cliente web y MPC
 
 El usuario inicia sesión con su cuenta de PocketBase y selecciona un MP4. El navegador ejecuta
 YuNet, LPD-YuNet y YOLOX-S, prepara entradas privadas y se conecta a cada party.
